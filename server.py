@@ -69,7 +69,13 @@ app = Flask(__name__)
 # ──────────────────────────────────────────────
 _PORT = int(os.environ.get("PORT", 5000))
 _HOST = os.environ.get("HOST", "0.0.0.0")
-SERVER_URL = os.environ.get("SERVER_URL", f"http://localhost:{_PORT}").rstrip("/")
+_raw_server_url = os.environ.get("SERVER_URL", "")
+# Never let 0.0.0.0 leak into URLs — it's a bind address, not reachable
+if not _raw_server_url:
+    _raw_server_url = f"http://localhost:{_PORT}"
+if "0.0.0.0" in _raw_server_url:
+    _raw_server_url = _raw_server_url.replace("0.0.0.0", "localhost")
+SERVER_URL = _raw_server_url.rstrip("/")
 ACCESS_TOKEN_TTL = 3600
 ID_TOKEN_TTL = 300
 AUTH_CODE_TTL = 600
@@ -80,6 +86,7 @@ DEFAULT_SEED_COUNT = int(os.environ.get("SEED_COUNT", 100))
 # ──────────────────────────────────────────────
 auth_codes: dict[str, dict] = {}
 users: dict[str, dict] = {}          # sub -> user_data (persistent, reusable)
+_avatar_cache: dict[str, str] = {}   # sub -> base64 PNG (generated on demand)
 
 # ──────────────────────────────────────────────
 # RSA Key Generation
@@ -1064,6 +1071,14 @@ def token():
 
 @app.route("/connect/userinfo", methods=["POST", "GET"])
 def userinfo():
+
+    def _photo_url() -> str:
+        host = request.host
+        scheme = "https" if request.is_secure else "http"
+        if host:
+            return f"{scheme}://{host}/user/photo"
+        return f"{SERVER_URL}/user/photo"
+
     auth_header = request.headers.get("Authorization", "")
     if not auth_header.startswith("Bearer "):
         return jsonify({"error": "invalid_token"}), 401
@@ -1079,6 +1094,8 @@ def userinfo():
 
     sub = claims.get("sub", "")
     user = users.get(sub, generate_user())
+
+    photo_url = _photo_url()
 
     return jsonify({
         "sub": user.get("sub", ""),
@@ -1105,7 +1122,7 @@ def userinfo():
         "permanent_address": user.get("permanent_address", ""),
         "user_type_description": user.get("user_type_description", ""),
         "mobile": user.get("mobile", ""),
-        "photo": user.get("photo", ""),
+        "photo": photo_url,
         "country_name": user.get("country_name", ""),
         "last_verified_date": user.get("last_verified_date", ""),
     })

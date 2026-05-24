@@ -799,6 +799,18 @@ def _handle_authorize_get():
 
 
 def _handle_authorize_post():
+    # Guard: if this POST looks like a callback redirect (has code + id_token),
+    # it's not a login submission — reject it to prevent infinite loops
+    has_callback_fields = bool(request.form.get("code") or request.form.get("id_token"))
+    has_action = bool(request.form.get("action", "").strip())
+
+    if has_callback_fields and not has_action:
+        return (
+            "<h3>Invalid request</h3>"
+            "<p>This endpoint expects a login form submission. "
+            "The POST body contains callback fields (code/id_token) but no login action.</p>"
+        ), 400
+
     args = _get_args()
     action = request.form.get("action", "auto")
 
@@ -807,7 +819,10 @@ def _handle_authorize_post():
     elif action == "create":
         return _handle_create_user(args)
     else:
-        # Fallback: use first user
+        # Fallback: use first user — but only if we have the required params
+        if not args.get("redirect_uri"):
+            return ("<h3>Missing redirect_uri</h3>"
+                    "<p>No redirect_uri provided. Make sure you are logging in through your application.</p>"), 400
         sub = next(iter(users.keys()), str(uuid.uuid4()))
         if sub not in users:
             user = generate_user()
@@ -939,6 +954,11 @@ def _do_login(sub: str, args: dict):
     nonce = args["nonce"]
     code_challenge = args["code_challenge"]
     code_challenge_method = args["code_challenge_method"]
+
+    if not redirect_uri:
+        return ("<h3>Missing redirect_uri</h3>"
+                "<p>Cannot complete login without a redirect URI. "
+                "Make sure you are logging in from your application.</p>"), 400
 
     if sub not in users:
         return "<h3>User not found.</h3>", 400

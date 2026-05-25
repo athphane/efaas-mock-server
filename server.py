@@ -44,11 +44,14 @@ import uuid
 import hashlib
 import time
 import random
+import io
+import base64 as b64
 from datetime import datetime, timedelta
 from urllib.parse import urlencode
 from typing import Any
 
-from flask import Flask, request, jsonify, redirect, render_template_string
+from fastapi import FastAPI, Request, Form, Query
+from fastapi.responses import JSONResponse, HTMLResponse, RedirectResponse
 
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
@@ -56,13 +59,12 @@ from cryptography.hazmat.backends import default_backend
 import jwt
 from jwt.utils import base64url_encode
 from PIL import Image, ImageDraw, ImageFont
-import io
-import base64 as b64
+from jinja2 import Template
 
 # ──────────────────────────────────────────────
-# Flask app
+# FastAPI app
 # ──────────────────────────────────────────────
-app = Flask(__name__)
+app = FastAPI(title="eFaas Mock Server", version="3.0.0")
 
 # ──────────────────────────────────────────────
 # Configuration
@@ -70,7 +72,6 @@ app = Flask(__name__)
 _PORT = int(os.environ.get("PORT", 5000))
 _HOST = os.environ.get("HOST", "0.0.0.0")
 _raw_server_url = os.environ.get("SERVER_URL", "")
-# Never let 0.0.0.0 leak into URLs — it's a bind address, not reachable
 if not _raw_server_url:
     _raw_server_url = f"http://localhost:{_PORT}"
 if "0.0.0.0" in _raw_server_url:
@@ -85,8 +86,8 @@ DEFAULT_SEED_COUNT = int(os.environ.get("SEED_COUNT", 100))
 # In-memory stores
 # ──────────────────────────────────────────────
 auth_codes: dict[str, dict] = {}
-users: dict[str, dict] = {}          # sub -> user_data (persistent, reusable)
-_avatar_cache: dict[str, str] = {}   # sub -> base64 PNG (generated on demand)
+users: dict[str, dict] = {}
+_avatar_cache: dict[str, str] = {}
 
 # ──────────────────────────────────────────────
 # RSA Key Generation
@@ -316,7 +317,6 @@ def _make_maldivian_address() -> str:
 
 
 def generate_user(user_type: str | None = None) -> dict:
-    """Generate a random eFaas user profile."""
     if user_type is None:
         user_type = random.choices(
             ["Maldivian", "Work Permit Holder", "Foreigner"],
@@ -386,10 +386,8 @@ def generate_user(user_type: str | None = None) -> dict:
 
     permanent_address = _make_maldivian_address()
 
-    user_sub = str(uuid.uuid4())
-
     return {
-        "sub": user_sub,
+        "sub": str(uuid.uuid4()),
         "first_name": first_name,
         "middle_name": middle_name,
         "last_name": last_name,
@@ -423,57 +421,34 @@ def generate_user(user_type: str | None = None) -> dict:
 
 
 def seed_users(count: int = DEFAULT_SEED_COUNT):
-    """Pre-seed the user store with random users."""
     for _ in range(count):
         user = generate_user()
         users[user["sub"]] = user
-    # Also ensure there's a known test user
     test_user = {
         "sub": "3b46dc4b-f565-420b-af8f-9312c86e40cb",
-        "first_name": "CSC",
-        "middle_name": "Test User",
-        "last_name": "18",
+        "first_name": "CSC", "middle_name": "Test User", "last_name": "18",
         "full_name": "CSC Test User 18",
         "first_name_dhivehi": "ސީއެސްސީ",
         "middle_name_dhivehi": "ޓެސްޓް ޔޫސަރ",
         "last_name_dhivehi": "18",
         "full_name_dhivehi": "ސީއެސްސީ ޓެސްޓް ޔޫސަރ 18",
-        "gender": "M",
-        "idnumber": "A900318",
-        "email": "csc318@gmail.com",
-        "birthdate": "10/22/1993",
-        "passport_number": "LA19E7432",
-        "is_workpermit_active": "False",
-        "updated_at": "1/2/1995 12:00:00 AM",
-        "country_dialing_code": "+960",
-        "country_code": "462",
-        "country_code_alpha3": "MDV",
-        "verified": "False",
-        "verification_type": "NA",
+        "gender": "M", "idnumber": "A900318", "email": "csc318@gmail.com",
+        "birthdate": "10/22/1993", "passport_number": "LA19E7432",
+        "is_workpermit_active": "False", "updated_at": "1/2/1995 12:00:00 AM",
+        "country_dialing_code": "+960", "country_code": "462", "country_code_alpha3": "MDV",
+        "verified": "False", "verification_type": "NA",
         "permanent_address": json.dumps({
-            "AddressLine1": "asd",
-            "AddressLine2": "",
-            "Road": "",
-            "AtollAbbreviation": "K",
-            "AtollAbbreviationDhivehi": "ކ",
-            "IslandName": "Male'",
-            "IslandNameDhivehi": "މާލެ",
-            "HomeNameDhivehi": "",
-            "Ward": "Dhaftharu",
-            "WardAbbreviationEnglish": "Dhaftharu",
-            "WardAbbreviationDhivehi": "",
-            "Country": "Maldives",
-            "CountryISOThreeDigitCode": "462",
-            "CountryISOThreeLetterCode": "MDV",
+            "AddressLine1": "asd", "AddressLine2": "", "Road": "",
+            "AtollAbbreviation": "K", "AtollAbbreviationDhivehi": "ކ",
+            "IslandName": "Male'", "IslandNameDhivehi": "މާލެ",
+            "HomeNameDhivehi": "", "Ward": "Dhaftharu",
+            "WardAbbreviationEnglish": "Dhaftharu", "WardAbbreviationDhivehi": "",
+            "Country": "Maldives", "CountryISOThreeDigitCode": "462", "CountryISOThreeLetterCode": "MDV",
         }),
-        "user_type_description": "Maldivian",
-        "mobile": "7730018",
-        "photo": f"{SERVER_URL}/user/photo",
-        "country_name": "Maldives",
-        "last_verified_date": "",
-        "name": "CSC Test User 18",
-        "avatar": f"{SERVER_URL}/user/photo",
-        "nickname": "CSC",
+        "user_type_description": "Maldivian", "mobile": "7730018",
+        "photo": f"{SERVER_URL}/user/photo", "country_name": "Maldives",
+        "last_verified_date": "", "name": "CSC Test User 18",
+        "avatar": f"{SERVER_URL}/user/photo", "nickname": "CSC",
     }
     users[test_user["sub"]] = test_user
 
@@ -481,7 +456,7 @@ def seed_users(count: int = DEFAULT_SEED_COUNT):
 seed_users()
 
 # ──────────────────────────────────────────────
-# Authorization code management
+# Helpers
 # ──────────────────────────────────────────────
 
 def _cleanup_expired_codes():
@@ -490,12 +465,8 @@ def _cleanup_expired_codes():
     for c in expired:
         del auth_codes[c]
 
-# ──────────────────────────────────────────────
-# Helpers
-# ──────────────────────────────────────────────
 
 def _get_user_list(search: str = "", sort: str = "name") -> list[dict]:
-    """Return list of users, optionally filtered by search."""
     uu = list(users.values())
     if search:
         q = search.lower()
@@ -506,8 +477,7 @@ def _get_user_list(search: str = "", sort: str = "name") -> list[dict]:
               or q in u.get("user_type_description", "").lower()
               or q in u.get("first_name", "").lower()
               or q in u.get("last_name", "").lower()
-              or q in u.get("first_name_dhivehi", "")
-              ]
+              or q in u.get("first_name_dhivehi", "")]
     if sort == "name":
         uu.sort(key=lambda u: u.get("full_name", ""))
     elif sort == "recent":
@@ -517,23 +487,40 @@ def _get_user_list(search: str = "", sort: str = "name") -> list[dict]:
     return uu
 
 
-def _get_args() -> dict:
-    """Extract common OAuth2 params from request (query or form)."""
-    source = request.args if request.method == "GET" else request.form
+def _oauth_params(request: Request) -> dict:
+    """Extract common OAuth2 params from query params (falls back to defaults)."""
     return {
-        "client_id": source.get("client_id", request.args.get("client_id", "")),
-        "redirect_uri": source.get("redirect_uri", request.args.get("redirect_uri", "")),
-        "scope": source.get("scope", request.args.get("scope", "openid")),
-        "state": source.get("state", request.args.get("state", "")),
-        "nonce": source.get("nonce", request.args.get("nonce", "")),
-        "response_type": source.get("response_type", request.args.get("response_type", "code id_token")),
-        "response_mode": source.get("response_mode", request.args.get("response_mode", "form_post")),
-        "code_challenge": source.get("code_challenge", request.args.get("code_challenge", "")),
-        "code_challenge_method": source.get("code_challenge_method", request.args.get("code_challenge_method", "")),
+        "client_id": request.query_params.get("client_id", ""),
+        "redirect_uri": request.query_params.get("redirect_uri", ""),
+        "scope": request.query_params.get("scope", "openid"),
+        "state": request.query_params.get("state", ""),
+        "nonce": request.query_params.get("nonce", ""),
+        "response_type": request.query_params.get("response_type", "code id_token"),
+        "response_mode": request.query_params.get("response_mode", "form_post"),
+        "code_challenge": request.query_params.get("code_challenge", ""),
+        "code_challenge_method": request.query_params.get("code_challenge_method", ""),
     }
 
+
+def _photo_url(request: Request) -> str:
+    host = request.headers.get("host", "")
+    scheme = request.url.scheme or "http"
+    if host:
+        return f"{scheme}://{host}/user/photo"
+    return f"{SERVER_URL}/user/photo"
+
+
+def _html(template_str: str, status_code: int = 200, **kwargs) -> HTMLResponse:
+    return HTMLResponse(content=Template(template_str).render(**kwargs), status_code=status_code)
+
+
+def _error_html(message: str, detail: str = "", status_code: int = 400) -> HTMLResponse:
+    body = f"<h3>{message}</h3>" + (f"<p>{detail}</p>" if detail else "")
+    return HTMLResponse(content=body, status_code=status_code)
+
+
 # ──────────────────────────────────────────────
-# Jinja2 Templates
+# Templates
 # ──────────────────────────────────────────────
 
 LOGIN_PAGE = """<!DOCTYPE html>
@@ -575,8 +562,6 @@ LOGIN_PAGE = """<!DOCTYPE html>
   .btn { display: inline-flex; align-items: center; justify-content: center; padding: 12px 24px; font-size: 14px; font-weight: 600; border: none; border-radius: 8px; cursor: pointer; transition: all .15s; }
   .btn-primary { background: #1a237e; color: #fff; width: 100%; margin-top: 8px; }
   .btn-primary:hover { background: #283593; transform: translateY(-1px); box-shadow: 0 2px 8px rgba(26,35,126,.3); }
-  .btn-reset { background: #e8eaed; color: #555; }
-  .btn-reset:hover { background: #d2d5d9; }
   .actions { display: flex; gap: 10px; margin-top: 20px; }
   .actions .btn { flex: 1; }
   .subtitle { font-size: 13px; color: #888; margin-bottom: 20px; }
@@ -584,7 +569,6 @@ LOGIN_PAGE = """<!DOCTYPE html>
   .pick-hint { font-size: 13px; color: #888; margin-bottom: 16px; text-align: center; }
   .selected-info { background: #e8eaff; border: 2px solid #1a237e; border-radius: 8px; padding: 10px 14px; margin-top: 14px; font-size: 13px; display: none; }
   .selected-info.show { display: block; }
-  .unsafe-badge { display: inline-block; background: #fff3e0; color: #e65100; font-size: 11px; padding: 2px 8px; border-radius: 10px; margin-left: 8px; }
 </style>
 </head>
 <body>
@@ -598,7 +582,6 @@ LOGIN_PAGE = """<!DOCTYPE html>
     <div class="tab" onclick="switchTab('create')">Create New User</div>
   </div>
 
-  <!-- Panel: Select Existing User -->
   <div id="panel-select" class="panel active">
     <input type="text" class="search-box" id="search" placeholder="Search by name, email, ID number, type…" oninput="filterUsers()">
     <div class="results-info" id="results-info">Showing {{ total_users }} users</div>
@@ -626,7 +609,6 @@ LOGIN_PAGE = """<!DOCTYPE html>
     </form>
   </div>
 
-  <!-- Panel: Create New User -->
   <div id="panel-create" class="panel">
     <p class="subtitle">Fill in the details below to create a new account. All new accounts are saved and reusable.</p>
     <form method="post" id="create-form">
@@ -635,80 +617,23 @@ LOGIN_PAGE = """<!DOCTYPE html>
       {% endfor %}
       <input type="hidden" name="action" value="create">
       <div class="form-grid">
-        <div>
-          <label>First Name *</label>
-          <input name="first_name" required placeholder="Ahmed">
-        </div>
-        <div>
-          <label>Last Name *</label>
-          <input name="last_name" required placeholder="Rasheed">
-        </div>
-        <div>
-          <label>Middle Name</label>
-          <input name="middle_name" placeholder="Ali">
-        </div>
-        <div>
-          <label>Gender *</label>
-          <select name="gender" required>
-            <option value="M">Male</option>
-            <option value="F">Female</option>
-          </select>
-        </div>
-        <div>
-          <label>First Name (Dhivehi)</label>
-          <input name="first_name_dhivehi" placeholder="އަހުމަދު">
-        </div>
-        <div>
-          <label>Last Name (Dhivehi)</label>
-          <input name="last_name_dhivehi" placeholder="ރަޝީދު">
-        </div>
-        <div>
-          <label>ID Number *</label>
-          <input name="idnumber" required placeholder="A123456">
-        </div>
-        <div>
-          <label>User Type *</label>
-          <select name="user_type_description" id="user-type" required onchange="toggleFields()">
-            <option value="Maldivian">Maldivian</option>
-            <option value="Work Permit Holder">Work Permit Holder</option>
-            <option value="Foreigner">Foreigner</option>
-          </select>
-        </div>
-        <div>
-          <label>Email *</label>
-          <input type="email" name="email" required placeholder="ahmed@example.com">
-        </div>
-        <div>
-          <label>Mobile *</label>
-          <input name="mobile" required placeholder="7912345">
-        </div>
-        <div>
-          <label>Birthdate *</label>
-          <input name="birthdate" required placeholder="6/3/1990" value="6/3/1990">
-        </div>
-        <div>
-          <label>Country</label>
-          <input name="country_name" id="country-name" value="Maldives" placeholder="Maldives">
-        </div>
-        <div id="passport-group" style="display:none">
-          <label>Passport Number</label>
-          <input name="passport_number" placeholder="LA19E7432">
-        </div>
-        <div id="workpermit-group" style="display:none">
-          <label>Work Permit Active</label>
-          <select name="is_workpermit_active">
-            <option value="True">Yes</option>
-            <option value="False">No</option>
-          </select>
-        </div>
-        <div class="full">
-          <label>Permanent Address (JSON)</label>
-          <input name="permanent_address_json" placeholder='{"AddressLine1":"Blue Light","IslandName":"Male&apos;","Country":"Maldives",...}'>
-        </div>
+        <div><label>First Name *</label><input name="first_name" required placeholder="Ahmed"></div>
+        <div><label>Last Name *</label><input name="last_name" required placeholder="Rasheed"></div>
+        <div><label>Middle Name</label><input name="middle_name" placeholder="Ali"></div>
+        <div><label>Gender *</label><select name="gender" required><option value="M">Male</option><option value="F">Female</option></select></div>
+        <div><label>First Name (Dhivehi)</label><input name="first_name_dhivehi" placeholder="އަހުމަދު"></div>
+        <div><label>Last Name (Dhivehi)</label><input name="last_name_dhivehi" placeholder="ރަޝީދު"></div>
+        <div><label>ID Number *</label><input name="idnumber" required placeholder="A123456"></div>
+        <div><label>User Type *</label><select name="user_type_description" id="user-type" required onchange="toggleFields()"><option value="Maldivian">Maldivian</option><option value="Work Permit Holder">Work Permit Holder</option><option value="Foreigner">Foreigner</option></select></div>
+        <div><label>Email *</label><input type="email" name="email" required placeholder="ahmed@example.com"></div>
+        <div><label>Mobile *</label><input name="mobile" required placeholder="7912345"></div>
+        <div><label>Birthdate *</label><input name="birthdate" required placeholder="6/3/1990" value="6/3/1990"></div>
+        <div><label>Country</label><input name="country_name" id="country-name" value="Maldives" placeholder="Maldives"></div>
+        <div id="passport-group" style="display:none"><label>Passport Number</label><input name="passport_number" placeholder="LA19E7432"></div>
+        <div id="workpermit-group" style="display:none"><label>Work Permit Active</label><select name="is_workpermit_active"><option value="True">Yes</option><option value="False">No</option></select></div>
+        <div class="full"><label>Permanent Address (JSON)</label><input name="permanent_address_json" placeholder='{"AddressLine1":"Blue Light","IslandName":"Male&apos;","Country":"Maldives",...}'></div>
       </div>
-      <div class="actions">
-        <button type="submit" class="btn btn-primary">Create User &amp; Sign In</button>
-      </div>
+      <div class="actions"><button type="submit" class="btn btn-primary">Create User &amp; Sign In</button></div>
     </form>
   </div>
 
@@ -716,7 +641,6 @@ LOGIN_PAGE = """<!DOCTYPE html>
 
 <script>
 var selectedSub = null;
-
 function switchTab(tab) {
   document.querySelectorAll('.tab').forEach(function(t,i){
     t.classList.toggle('active', (tab==='select'&&i===0)||(tab==='create'&&i===1));
@@ -724,7 +648,6 @@ function switchTab(tab) {
   document.getElementById('panel-select').classList.toggle('active', tab==='select');
   document.getElementById('panel-create').classList.toggle('active', tab==='create');
 }
-
 function selectUser(sub, el) {
   document.querySelectorAll('.user-card').forEach(function(c){ c.classList.remove('selected'); });
   el.classList.add('selected');
@@ -735,7 +658,6 @@ function selectUser(sub, el) {
   document.getElementById('selected-info').innerHTML = '<strong>Selected:</strong> ' + u + ' (sub: ' + sub.substring(0,8) + '…)';
   document.getElementById('selected-info').classList.add('show');
 }
-
 function filterUsers() {
   var q = document.getElementById('search').value.toLowerCase();
   var cards = document.querySelectorAll('.user-card');
@@ -749,7 +671,6 @@ function filterUsers() {
   document.getElementById('no-results').style.display = count === 0 ? '' : 'none';
   document.getElementById('pick-hint').style.display = count === 0 ? 'none' : '';
 }
-
 function toggleFields() {
   var t = document.getElementById('user-type').value;
   document.getElementById('passport-group').style.display = (t==='Work Permit Holder'||t==='Foreigner') ? '' : 'none';
@@ -758,258 +679,6 @@ function toggleFields() {
 </script>
 </body>
 </html>"""
-
-# ──────────────────────────────────────────────
-# Routes
-# ──────────────────────────────────────────────
-
-@app.route("/", methods=["GET"])
-def index():
-    return jsonify({
-        "service": "eFaas Mock Server",
-        "version": "2.0.0",
-        "issuer": SERVER_URL,
-        "total_users": len(users),
-        "endpoints": {
-            "authorization": f"{SERVER_URL}/connect/authorize",
-            "token": f"{SERVER_URL}/connect/token",
-            "userinfo": f"{SERVER_URL}/connect/userinfo",
-            "jwks": f"{SERVER_URL}/.well-known/openid-configuration/jwks",
-            "end_session": f"{SERVER_URL}/connect/endsession",
-        },
-        "key_id": KID,
-    })
-
-
-@app.route("/connect/authorize", methods=["GET", "POST"])
-def authorize():
-    _cleanup_expired_codes()
-
-    if request.method == "POST":
-        return _handle_authorize_post()
-
-    return _handle_authorize_get()
-
-
-def _handle_authorize_get():
-    args = _get_args()
-
-    search = request.args.get("search", "")
-    sort = request.args.get("sort", "name")
-    user_list = _get_user_list(search=search, sort=sort)
-
-    return render_template_string(LOGIN_PAGE,
-        params=args,
-        user_list=user_list,
-        total_users=len(users),
-    )
-
-
-def _handle_authorize_post():
-    # Guard: if this POST looks like a callback redirect (has code + id_token),
-    # it's not a login submission — reject it to prevent infinite loops
-    has_callback_fields = bool(request.form.get("code") or request.form.get("id_token"))
-    has_action = bool(request.form.get("action", "").strip())
-
-    if has_callback_fields and not has_action:
-        return (
-            "<h3>Invalid request</h3>"
-            "<p>This endpoint expects a login form submission. "
-            "The POST body contains callback fields (code/id_token) but no login action.</p>"
-        ), 400
-
-    args = _get_args()
-    action = request.form.get("action", "auto")
-
-    if action == "select":
-        return _handle_select_user(args)
-    elif action == "create":
-        return _handle_create_user(args)
-    else:
-        # Fallback: use first user — but only if we have the required params
-        if not args.get("redirect_uri"):
-            return ("<h3>Missing redirect_uri</h3>"
-                    "<p>No redirect_uri provided. Make sure you are logging in through your application.</p>"), 400
-        sub = next(iter(users.keys()), str(uuid.uuid4()))
-        if sub not in users:
-            user = generate_user()
-            users[user["sub"]] = user
-            sub = user["sub"]
-        return _do_login(sub, args)
-
-
-def _handle_select_user(args):
-    sub = request.form.get("sub", "")
-    if sub not in users:
-        # Unknown user — fall back to first available
-        sub = next(iter(users.keys()), "")
-        if not sub:
-            return "<h3>No users available. Please create one first.</h3>", 400
-    return _do_login(sub, args)
-
-
-def _handle_create_user(args):
-    first_name = request.form.get("first_name", "").strip()
-    last_name = request.form.get("last_name", "").strip()
-    middle_name = request.form.get("middle_name", "").strip()
-    gender = request.form.get("gender", "M")
-    idnumber = request.form.get("idnumber", "").strip()
-    email = request.form.get("email", "").strip()
-    mobile = request.form.get("mobile", "").strip()
-    birthdate = request.form.get("birthdate", "1/1/1990")
-    user_type = request.form.get("user_type_description", "Maldivian")
-    country_name = request.form.get("country_name", "Maldives")
-    passport_number = request.form.get("passport_number", "").strip()
-    is_workpermit_active = request.form.get("is_workpermit_active", "False")
-    first_name_dhivehi = request.form.get("first_name_dhivehi", "").strip()
-    last_name_dhivehi = request.form.get("last_name_dhivehi", "").strip()
-    middle_name_dhivehi = request.form.get("middle_name_dhivehi", "").strip()
-    permanent_address_json = request.form.get("permanent_address_json", "").strip()
-
-    if not first_name or not last_name:
-        return "<h3>First name and last name are required.</h3>", 400
-
-    full_name = f"{first_name} {middle_name} {last_name}".replace("  ", " ").strip()
-    full_name_dhivehi = f"{first_name_dhivehi} {middle_name_dhivehi} {last_name_dhivehi}".replace("  ", " ").strip()
-
-    if permanent_address_json:
-        try:
-            json.loads(permanent_address_json)
-        except json.JSONDecodeError:
-            return "<h3>Invalid JSON in permanent address field.</h3>", 400
-    else:
-        permanent_address_json = json.dumps({
-            "AddressLine1": "",
-            "AddressLine2": "",
-            "Road": "",
-            "AtollAbbreviation": "K",
-            "AtollAbbreviationDhivehi": "ކ",
-            "IslandName": "Male'",
-            "IslandNameDhivehi": "މާލެ",
-            "HomeNameDhivehi": "",
-            "Ward": "Maafannu",
-            "WardAbbreviationEnglish": "M",
-            "WardAbbreviationDhivehi": "މ",
-            "Country": country_name,
-            "CountryISOThreeDigitCode": "462",
-            "CountryISOThreeLetterCode": "MDV",
-        })
-
-    # Country code defaults
-    country_codes = {
-        "Maldives": ("462", "MDV", "+960"),
-        "Bangladesh": ("050", "BGD", "+880"),
-        "India": ("356", "IND", "+91"),
-        "Sri Lanka": ("144", "LKA", "+94"),
-        "Nepal": ("524", "NPL", "+977"),
-        "Philippines": ("608", "PHL", "+63"),
-        "United Kingdom": ("826", "GBR", "+44"),
-        "Germany": ("276", "DEU", "+49"),
-        "France": ("250", "FRA", "+33"),
-        "Italy": ("380", "ITA", "+39"),
-        "China": ("156", "CHN", "+86"),
-        "Japan": ("392", "JPN", "+81"),
-        "Australia": ("036", "AUS", "+61"),
-        "USA": ("840", "USA", "+1"),
-    }
-    cc = country_codes.get(country_name, ("462", "MDV", "+960"))
-
-    user_sub = str(uuid.uuid4())
-    user = {
-        "sub": user_sub,
-        "first_name": first_name,
-        "middle_name": middle_name,
-        "last_name": last_name,
-        "full_name": full_name,
-        "first_name_dhivehi": first_name_dhivehi,
-        "middle_name_dhivehi": middle_name_dhivehi,
-        "last_name_dhivehi": last_name_dhivehi,
-        "full_name_dhivehi": full_name_dhivehi,
-        "gender": gender,
-        "idnumber": idnumber,
-        "email": email,
-        "birthdate": birthdate,
-        "passport_number": passport_number,
-        "is_workpermit_active": is_workpermit_active,
-        "updated_at": datetime.now().strftime("%m/%d/%Y %I:%M:%S %p"),
-        "country_dialing_code": cc[2],
-        "country_code": cc[0],
-        "country_code_alpha3": cc[1],
-        "verified": "False",
-        "verification_type": "NA",
-        "permanent_address": permanent_address_json,
-        "user_type_description": user_type,
-        "mobile": mobile,
-        "photo": f"{SERVER_URL}/user/photo",
-        "country_name": country_name,
-        "last_verified_date": "",
-        "name": full_name,
-        "avatar": f"{SERVER_URL}/user/photo",
-        "nickname": first_name,
-    }
-
-    users[user_sub] = user
-    return _do_login(user_sub, args)
-
-
-def _do_login(sub: str, args: dict):
-    """Complete the OAuth2 login flow for a given user sub."""
-    client_id = args["client_id"]
-    redirect_uri = args["redirect_uri"]
-    scope = args["scope"]
-    state = args["state"]
-    nonce = args["nonce"]
-    code_challenge = args["code_challenge"]
-    code_challenge_method = args["code_challenge_method"]
-
-    if not redirect_uri:
-        return ("<h3>Missing redirect_uri</h3>"
-                "<p>Cannot complete login without a redirect URI. "
-                "Make sure you are logging in from your application.</p>"), 400
-
-    if sub not in users:
-        return "<h3>User not found.</h3>", 400
-
-    user = users[sub]
-
-    code = str(uuid.uuid4()).replace("-", "")
-    sid = str(uuid.uuid4()).replace("-", "").upper()[:32]
-
-    access_token = _make_access_token(sub, sid, client_id, scope)
-    id_token = _make_id_token(sub, sid, client_id, nonce, access_token, scope, user)
-
-    auth_codes[code] = {
-        "client_id": client_id,
-        "redirect_uri": redirect_uri,
-        "scope": scope,
-        "nonce": nonce,
-        "state": state,
-        "expires_at": time.time() + AUTH_CODE_TTL,
-        "user_sub": sub,
-        "user": user,
-        "sid": sid,
-        "access_token": access_token,
-        "code_challenge": code_challenge,
-        "code_challenge_method": code_challenge_method,
-    }
-
-    session_state = f"{uuid.uuid4().hex}.{uuid.uuid4().hex}"
-
-    if request.headers.get("Accept", "").startswith("application/json"):
-        return jsonify({
-            "code": code, "id_token": id_token, "scope": scope,
-            "session_state": session_state, "state": state,
-        })
-
-    return render_template_string(AUTO_POST_TEMPLATE,
-        redirect_uri=redirect_uri,
-        code=code,
-        id_token=id_token,
-        scope=scope,
-        session_state=session_state,
-        state=state,
-    )
-
 
 AUTO_POST_TEMPLATE = """<!DOCTYPE html>
 <html>
@@ -1027,38 +696,240 @@ AUTO_POST_TEMPLATE = """<!DOCTYPE html>
 </html>"""
 
 
-@app.route("/connect/token", methods=["POST"])
-def token():
-    _cleanup_expired_codes()
+def _do_login(sub: str, oauth: dict, request: Request):
+    if not oauth.get("redirect_uri"):
+        return _error_html("Missing redirect_uri",
+                           "Cannot complete login without a redirect URI.", 400)
+    if sub not in users:
+        return _error_html("User not found.", status_code=400)
 
-    grant_type = request.form.get("grant_type", "")
-    code = request.form.get("code", "")
-    client_id = request.form.get("client_id", "")
-    client_secret = request.form.get("client_secret", "")
-    code_verifier = request.form.get("code_verifier", "")
+    user = users[sub]
+    code = str(uuid.uuid4()).replace("-", "")
+    sid = str(uuid.uuid4()).replace("-", "").upper()[:32]
+
+    access_token = _make_access_token(sub, sid, oauth["client_id"], oauth["scope"])
+    id_token = _make_id_token(sub, sid, oauth["client_id"], oauth.get("nonce"),
+                              access_token, oauth["scope"], user)
+
+    auth_codes[code] = {
+        "client_id": oauth["client_id"],
+        "redirect_uri": oauth["redirect_uri"],
+        "scope": oauth["scope"],
+        "nonce": oauth.get("nonce"),
+        "state": oauth.get("state"),
+        "expires_at": time.time() + AUTH_CODE_TTL,
+        "user_sub": sub,
+        "user": user,
+        "sid": sid,
+        "access_token": access_token,
+        "code_challenge": oauth.get("code_challenge", ""),
+        "code_challenge_method": oauth.get("code_challenge_method", ""),
+    }
+
+    session_state = f"{uuid.uuid4().hex}.{uuid.uuid4().hex}"
+
+    if request.headers.get("accept", "").startswith("application/json"):
+        return JSONResponse({
+            "code": code, "id_token": id_token, "scope": oauth["scope"],
+            "session_state": session_state, "state": oauth.get("state", ""),
+        })
+
+    return _html(AUTO_POST_TEMPLATE,
+        redirect_uri=oauth["redirect_uri"],
+        code=code, id_token=id_token,
+        scope=oauth["scope"],
+        session_state=session_state,
+        state=oauth.get("state", ""),
+    )
+
+
+# ──────────────────────────────────────────────
+# Route handlers
+# ──────────────────────────────────────────────
+
+@app.get("/")
+def index():
+    return {
+        "service": "eFaas Mock Server",
+        "version": "3.0.0",
+        "framework": "FastAPI",
+        "issuer": SERVER_URL,
+        "total_users": len(users),
+        "endpoints": {
+            "authorization": f"{SERVER_URL}/connect/authorize",
+            "token": f"{SERVER_URL}/connect/token",
+            "userinfo": f"{SERVER_URL}/connect/userinfo",
+            "jwks": f"{SERVER_URL}/.well-known/openid-configuration/jwks",
+            "end_session": f"{SERVER_URL}/connect/endsession",
+        },
+        "key_id": KID,
+    }
+
+
+@app.get("/connect/authorize")
+def authorize_get(request: Request,
+                  search: str = Query(default=""),
+                  sort: str = Query(default="name")):
+    _cleanup_expired_codes()
+    oauth = _oauth_params(request)
+    user_list = _get_user_list(search=search, sort=sort)
+    return _html(LOGIN_PAGE,
+        params=oauth, user_list=user_list, total_users=len(users))
+
+
+@app.post("/connect/authorize")
+async def authorize_post(request: Request):
+    _cleanup_expired_codes()
+    form = await request.form()
+
+    # Guard: reject stray callback POSTs (have code/id_token but no login action)
+    has_callback_fields = bool(form.get("code") or form.get("id_token"))
+    has_action = bool((form.get("action") or "").strip())
+    if has_callback_fields and not has_action:
+        return _error_html("Invalid request",
+                           "This endpoint expects a login form submission.", 400)
+
+    # Merge query params into form for OAuth params (form includes hidden fields)
+    oauth = _oauth_params(request)
+    for key in oauth:
+        if key in form:
+            oauth[key] = form[key]
+
+    action = form.get("action", "auto")
+
+    if action == "select":
+        sub = form.get("sub", "")
+        if sub not in users:
+            sub = next(iter(users.keys()), "")
+            if not sub:
+                return _error_html("No users available. Please create one first.", status_code=400)
+        return _do_login(sub, oauth, request)
+
+    elif action == "create":
+        return _handle_create_user(oauth, form, request)
+
+    else:
+        if not oauth.get("redirect_uri"):
+            return _error_html("Missing redirect_uri",
+                               "Make sure you are logging in through your application.", 400)
+        sub = next(iter(users.keys()), str(uuid.uuid4()))
+        if sub not in users:
+            user = generate_user()
+            users[user["sub"]] = user
+            sub = user["sub"]
+        return _do_login(sub, oauth, request)
+
+
+def _handle_create_user(oauth: dict, form, request: Request):
+    first_name = (form.get("first_name") or "").strip()
+    last_name = (form.get("last_name") or "").strip()
+    if not first_name or not last_name:
+        return _error_html("First name and last name are required.", status_code=400)
+
+    middle_name = (form.get("middle_name") or "").strip()
+    gender = form.get("gender", "M")
+    idnumber = (form.get("idnumber") or "").strip()
+    email = (form.get("email") or "").strip()
+    mobile = (form.get("mobile") or "").strip()
+    birthdate = form.get("birthdate", "1/1/1990")
+    user_type = form.get("user_type_description", "Maldivian")
+    country_name = form.get("country_name", "Maldives")
+    passport_number = (form.get("passport_number") or "").strip()
+    is_workpermit_active = form.get("is_workpermit_active", "False")
+    first_name_dhivehi = (form.get("first_name_dhivehi") or "").strip()
+    last_name_dhivehi = (form.get("last_name_dhivehi") or "").strip()
+    middle_name_dhivehi = (form.get("middle_name_dhivehi") or "").strip()
+    permanent_address_json = (form.get("permanent_address_json") or "").strip()
+
+    full_name = f"{first_name} {middle_name} {last_name}".replace("  ", " ").strip()
+    full_name_dhivehi = f"{first_name_dhivehi} {middle_name_dhivehi} {last_name_dhivehi}".replace("  ", " ").strip()
+
+    if permanent_address_json:
+        try:
+            json.loads(permanent_address_json)
+        except json.JSONDecodeError:
+            return _error_html("Invalid JSON in permanent address field.", status_code=400)
+    else:
+        permanent_address_json = json.dumps({
+            "AddressLine1": "", "AddressLine2": "", "Road": "",
+            "AtollAbbreviation": "K", "AtollAbbreviationDhivehi": "ކ",
+            "IslandName": "Male'", "IslandNameDhivehi": "މާލެ",
+            "HomeNameDhivehi": "", "Ward": "Maafannu",
+            "WardAbbreviationEnglish": "M", "WardAbbreviationDhivehi": "މ",
+            "Country": country_name, "CountryISOThreeDigitCode": "462",
+            "CountryISOThreeLetterCode": "MDV",
+        })
+
+    country_codes = {
+        "Maldives": ("462", "MDV", "+960"),
+        "Bangladesh": ("050", "BGD", "+880"), "India": ("356", "IND", "+91"),
+        "Sri Lanka": ("144", "LKA", "+94"), "Nepal": ("524", "NPL", "+977"),
+        "Philippines": ("608", "PHL", "+63"),
+        "United Kingdom": ("826", "GBR", "+44"), "Germany": ("276", "DEU", "+49"),
+        "France": ("250", "FRA", "+33"), "Italy": ("380", "ITA", "+39"),
+        "China": ("156", "CHN", "+86"), "Japan": ("392", "JPN", "+81"),
+        "Australia": ("036", "AUS", "+61"), "USA": ("840", "USA", "+1"),
+    }
+    cc = country_codes.get(country_name, ("462", "MDV", "+960"))
+
+    user_sub = str(uuid.uuid4())
+    user = {
+        "sub": user_sub, "first_name": first_name, "middle_name": middle_name,
+        "last_name": last_name, "full_name": full_name,
+        "first_name_dhivehi": first_name_dhivehi, "middle_name_dhivehi": middle_name_dhivehi,
+        "last_name_dhivehi": last_name_dhivehi, "full_name_dhivehi": full_name_dhivehi,
+        "gender": gender, "idnumber": idnumber, "email": email,
+        "birthdate": birthdate, "passport_number": passport_number,
+        "is_workpermit_active": is_workpermit_active,
+        "updated_at": datetime.now().strftime("%m/%d/%Y %I:%M:%S %p"),
+        "country_dialing_code": cc[2], "country_code": cc[0], "country_code_alpha3": cc[1],
+        "verified": "False", "verification_type": "NA",
+        "permanent_address": permanent_address_json,
+        "user_type_description": user_type, "mobile": mobile,
+        "photo": f"{SERVER_URL}/user/photo", "country_name": country_name,
+        "last_verified_date": "", "name": full_name,
+        "avatar": f"{SERVER_URL}/user/photo", "nickname": first_name,
+    }
+
+    users[user_sub] = user
+    return _do_login(user_sub, oauth, request)
+
+
+@app.post("/connect/token")
+async def token(request: Request):
+    _cleanup_expired_codes()
+    form = await request.form()
+
+    grant_type = form.get("grant_type", "")
+    code = form.get("code", "")
 
     if grant_type != "authorization_code":
-        return jsonify({"error": "unsupported_grant_type"}), 400
+        return JSONResponse({"error": "unsupported_grant_type"}, 400)
 
     if code not in auth_codes:
-        return jsonify({"error": "invalid_grant", "error_description": "Invalid or expired authorization code"}), 400
+        return JSONResponse({"error": "invalid_grant",
+                             "error_description": "Invalid or expired authorization code"}, 400)
 
     stored = auth_codes[code]
 
     if stored.get("code_challenge"):
+        code_verifier = form.get("code_verifier", "")
         method = stored.get("code_challenge_method", "S256")
         if method == "S256":
-            expected = base64url_encode(hashlib.sha256(code_verifier.encode("ascii")).digest()).decode("ascii")
+            expected = base64url_encode(
+                hashlib.sha256(code_verifier.encode("ascii")).digest()
+            ).decode("ascii")
         else:
             expected = code_verifier
         if expected != stored["code_challenge"]:
-            return jsonify({"error": "invalid_grant", "error_description": "PKCE validation failed"}), 400
+            return JSONResponse({"error": "invalid_grant",
+                                 "error_description": "PKCE validation failed"}, 400)
 
     del auth_codes[code]
 
-    return jsonify({
+    return {
         "id_token": _make_id_token(
-            stored["user_sub"], stored["sid"], client_id,
+            stored["user_sub"], stored["sid"], stored["client_id"],
             stored.get("nonce"), stored["access_token"],
             stored["scope"], stored["user"],
         ),
@@ -1066,38 +937,29 @@ def token():
         "expires_in": ACCESS_TOKEN_TTL,
         "token_type": "Bearer",
         "scope": stored["scope"],
-    })
+    }
 
 
-@app.route("/connect/userinfo", methods=["POST", "GET"])
-def userinfo():
-
-    def _photo_url() -> str:
-        host = request.host
-        scheme = "https" if request.is_secure else "http"
-        if host:
-            return f"{scheme}://{host}/user/photo"
-        return f"{SERVER_URL}/user/photo"
-
-    auth_header = request.headers.get("Authorization", "")
+@app.post("/connect/userinfo")
+@app.get("/connect/userinfo")
+def userinfo(request: Request):
+    auth_header = request.headers.get("authorization", "")
     if not auth_header.startswith("Bearer "):
-        return jsonify({"error": "invalid_token"}), 401
+        return JSONResponse({"error": "invalid_token"}, 401)
 
     token = auth_header[7:]
     try:
         claims = jwt.decode(token, _public_key, algorithms=["RS256"],
                            options={"verify_exp": True, "verify_aud": False})
     except jwt.ExpiredSignatureError:
-        return jsonify({"error": "invalid_token", "error_description": "Token expired"}), 401
+        return JSONResponse({"error": "invalid_token", "error_description": "Token expired"}, 401)
     except jwt.InvalidTokenError:
-        return jsonify({"error": "invalid_token", "error_description": "Token validation failed"}), 401
+        return JSONResponse({"error": "invalid_token", "error_description": "Token validation failed"}, 401)
 
     sub = claims.get("sub", "")
     user = users.get(sub, generate_user())
 
-    photo_url = _photo_url()
-
-    return jsonify({
+    return {
         "sub": user.get("sub", ""),
         "middle_name": user.get("middle_name", ""),
         "gender": user.get("gender", ""),
@@ -1122,68 +984,73 @@ def userinfo():
         "permanent_address": user.get("permanent_address", ""),
         "user_type_description": user.get("user_type_description", ""),
         "mobile": user.get("mobile", ""),
-        "photo": photo_url,
+        "photo": _photo_url(request),
         "country_name": user.get("country_name", ""),
         "last_verified_date": user.get("last_verified_date", ""),
-    })
+    }
 
 
-@app.route("/.well-known/openid-configuration/jwks", methods=["GET"])
+@app.get("/.well-known/openid-configuration/jwks")
 def jwks():
-    return jsonify(_make_jwks())
+    return _make_jwks()
 
 
-@app.route("/connect/endsession", methods=["GET"])
-def endsession():
-    redirect_uri = request.args.get("post_logout_redirect_uri", "")
-    state = request.args.get("state", "")
-
-    if redirect_uri:
+@app.get("/connect/endsession")
+def endsession(
+    post_logout_redirect_uri: str = Query(default=""),
+    state: str = Query(default=""),
+):
+    if post_logout_redirect_uri:
         params = {}
         if state:
             params["state"] = state
-        sep = "&" if "?" in redirect_uri else "?"
-        return redirect(redirect_uri + sep + urlencode(params))
+        sep = "&" if "?" in post_logout_redirect_uri else "?"
+        return RedirectResponse(url=post_logout_redirect_uri + sep + urlencode(params))
+    return {"message": "Logged out successfully"}
 
-    return jsonify({"message": "Logged out successfully"})
 
-
-@app.route("/user/photo", methods=["GET"])
-def user_photo():
-    auth_header = request.headers.get("Authorization", "")
+@app.get("/user/photo")
+def user_photo(request: Request):
+    auth_header = request.headers.get("authorization", "")
     if not auth_header.startswith("Bearer "):
-        return jsonify({"data": {"photo": _generate_avatar_png(None, None, None)}})
+        return {"data": {"photo": _generate_avatar_png(None, None, None)}}
 
     token = auth_header[7:]
     try:
         claims = jwt.decode(token, _public_key, algorithms=["RS256"],
                            options={"verify_exp": True, "verify_aud": False})
     except jwt.InvalidTokenError:
-        return jsonify({"data": {"photo": _generate_avatar_png(None, None, None)}})
+        return {"data": {"photo": _generate_avatar_png(None, None, None)}}
 
     sub = claims.get("sub", "")
     user = users.get(sub)
     if not user:
-        return jsonify({"data": {"photo": _generate_avatar_png(None, None, None)}})
+        return {"data": {"photo": _generate_avatar_png(None, None, None)}}
+
+    return {"data": {"photo": _avatar_for_user(user, sub)}}
+
+
+def _avatar_for_user(user: dict, sub: str) -> str:
+    if sub in _avatar_cache:
+        return _avatar_cache[sub]
 
     first = user.get("first_name", "")
     last = user.get("last_name", "")
     initials = (first[:1] + last[:1]).upper() or "?"
 
-    # Deterministic color from user sub
     color_seed = int(hashlib.md5(user.get("sub", "").encode()).hexdigest()[:8], 16)
     r = (color_seed >> 16) & 0xFF
     g = (color_seed >> 8) & 0xFF
     b = color_seed & 0xFF
-    # Brighten the color so white text is readable
     bg_color = (max(r, 80), max(g, 80), max(b, 80))
 
     png_b64 = _generate_avatar_png(initials, bg_color, sub)
-    return jsonify({"data": {"photo": png_b64}})
+    _avatar_cache[sub] = png_b64
+    return png_b64
 
 
-def _generate_avatar_png(initials: str | None, bg_color: tuple[int, int, int] | None, seed: str | None) -> str:
-    """Generate a 300x300 PNG avatar as base64."""
+def _generate_avatar_png(initials: str | None, bg_color: tuple[int, int, int] | None,
+                         seed: str | None = None) -> str:
     size = 300
     if bg_color is None:
         bg_color = (100, 100, 100)
@@ -1193,14 +1060,12 @@ def _generate_avatar_png(initials: str | None, bg_color: tuple[int, int, int] | 
     img = Image.new("RGBA", (size, size), bg_color + (255,))
     draw = ImageDraw.Draw(img)
 
-    # Draw a subtle circle in the background for visual interest
     cx, cy = size // 2, size // 2
     r_circle = size // 3
     lighter = tuple(min(c + 30, 255) for c in bg_color)
     draw.ellipse([cx - r_circle, cy - r_circle, cx + r_circle, cy + r_circle],
                  fill=lighter + (80,))
 
-    # Try to use a system font, fall back to default
     font = None
     font_size = 120
     font_paths = [
@@ -1218,14 +1083,11 @@ def _generate_avatar_png(initials: str | None, bg_color: tuple[int, int, int] | 
     if font is None:
         font = ImageFont.load_default()
 
-    # Center the text
     bbox = draw.textbbox((0, 0), initials, font=font)
-    tw = bbox[2] - bbox[0]
-    th = bbox[3] - bbox[1]
+    tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
     x = (size - tw) // 2
     y = (size - th) // 2 - bbox[1]
 
-    # Draw text shadow then text
     shadow_color = tuple(max(c - 30, 0) for c in bg_color)
     draw.text((x + 2, y + 2), initials, fill=shadow_color + (80,), font=font)
     draw.text((x, y), initials, fill=(255, 255, 255, 220), font=font)
@@ -1239,11 +1101,13 @@ def _generate_avatar_png(initials: str | None, bg_color: tuple[int, int, int] | 
 # Main
 # ──────────────────────────────────────────────
 if __name__ == "__main__":
+    import uvicorn
+
     debug = os.environ.get("DEBUG", "").lower() in ("1", "true", "yes")
 
     print(f"""
 ╔══════════════════════════════════════════════╗
-║        eFaas Mock Server v2.0.0              ║
+║        eFaas Mock Server v3.0.0 (FastAPI)    ║
 ╠══════════════════════════════════════════════╣
 ║  Issuer:   {SERVER_URL:<34s} ║
 ║  Users:    {len(users):<34d} ║
@@ -1259,4 +1123,4 @@ if __name__ == "__main__":
 ╚══════════════════════════════════════════════╝
     """)
 
-    app.run(host=_HOST, port=_PORT, debug=debug)
+    uvicorn.run(app, host=_HOST, port=_PORT, log_level="debug" if debug else "info")

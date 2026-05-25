@@ -1,6 +1,8 @@
 # eFaas Mock Server
 
-A local mock of the [eFaas](https://efaas.gov.mv/) OIDC/OAuth2 identity provider, designed to work with the [Javaabu/EFaas-Socialite](https://github.com/Javaabu/EFaas-Socialite) Laravel package for development and testing without relying on the official eFaas server.
+A local mock of the [eFaas](https://efaas.gov.mv/) OIDC/OAuth2 identity provider for development and testing — no dependency on the real eFaas server.
+
+Implements standard OpenID Connect endpoints. Works with **any** language or framework (Laravel, Express, Django, Rails, mobile apps, SPA, etc.).
 
 ## Quick Start
 
@@ -18,35 +20,56 @@ docker compose up -d
 
 Server starts on `http://localhost:5000` by default with **100 pre-seeded accounts**.
 
-## Laravel .env Configuration
+## App Configuration
 
-Any `CLIENT_ID` and `CLIENT_SECRET` values are accepted — the mock doesn't validate them.
+No client credentials are validated — use any values. Point your OAuth2/OIDC library at the mock server's base URL.
+
+```
+client_id     = any-value
+client_secret = any-value
+redirect_uri  = http://localhost:8000/callback
+mode          = development
+api_url       = http://localhost:5000
+```
+
+### Laravel with eFaas Socialite
 
 ```env
-EFAAS_CLIENT_ID=any-client-id
-EFAAS_CLIENT_SECRET=any-secret
+EFAAS_CLIENT_ID=any-value
+EFAAS_CLIENT_SECRET=any-value
 EFAAS_REDIRECT_URI=http://localhost:8000/oauth/efaas/callback
 EFAAS_MODE=development
 EFAAS_API_URL=http://localhost:5000
 ```
 
+### Any OAuth2 Client
+
+```env
+OAUTH_AUTHORIZE_URL=http://localhost:5000/connect/authorize
+OAUTH_TOKEN_URL=http://localhost:5000/connect/token
+OAUTH_USERINFO_URL=http://localhost:5000/connect/userinfo
+OAUTH_CLIENT_ID=any-value
+OAUTH_CLIENT_SECRET=any-value
+OAUTH_REDIRECT_URI=http://localhost:8000/callback
+```
+
 ### Docker Networking
 
-If your Laravel app is also running in Docker, `localhost` inside the Laravel container won't resolve to the mock server. Use the Compose service name instead:
+If your app is also running in Docker, `localhost` inside its container won't resolve to the mock server. Use the Compose service name instead:
 
 ```env
 # Inside docker-compose, both services on the same network:
-EFAAS_API_URL=http://efaas:5000
+api_url=http://efaas:5000
 ```
 
-The mock server's `SERVER_URL` should match what your Laravel app uses to reach it:
+The mock server's `SERVER_URL` should match what your app uses to reach it:
 
 ```yaml
 # docker-compose.yml
 services:
   efaas:
     environment:
-      - SERVER_URL=http://efaas:5000   # same host the Laravel app sees
+      - SERVER_URL=http://efaas:5000
 ```
 
 ## Login Flow
@@ -56,7 +79,7 @@ services:
    - **Select Existing User** — browse/search 100+ pre-seeded accounts, click to pick one
    - **Create New User** — fill in a form with name, DOB, gender, ID number, etc; created accounts are saved and reusable
 3. On sign-in, the mock POST-redirects back to your app with `code`, `id_token`, `scope`, and `state`
-4. Socialite exchanges the code for tokens, fetches the user profile, and validates JWT signatures via JWKS
+4. Your app exchanges the code for tokens, fetches the user profile, and validates JWT signatures via JWKS
 
 ## User Avatars
 
@@ -84,7 +107,7 @@ The photo URL in the user profile is generated **dynamically from the incoming r
 | `SERVER_URL` | `http://localhost:{PORT}` | Base URL — `0.0.0.0` is silently replaced with `localhost` |
 | `SEED_COUNT` | `100` | Number of pre-seeded accounts |
 | `RSA_PRIVATE_KEY_PEM` | — | Custom RSA private key in PEM |
-| `DEBUG` | `false` | Enable Flask debug |
+| `DEBUG` | `false` | Enable debug |
 
 ## Features
 
@@ -93,8 +116,15 @@ The photo URL in the user profile is generated **dynamically from the incoming r
 - Search/filter existing users by name, email, ID number, or type
 - Unique 300x300 avatar per user (initials on coloured background) served as base64 PNG
 - Real RSA key signing with JWKS endpoint (JWT signatures are fully validatable)
-- No client_id/client_secret validation — plug in any values
+- No client credentials validation — plug in any values
 - PKCE support
 - One-tap login passthrough
 - Single-use authorization codes
 - Photo URL generated dynamically from request Host header — works across Docker networks and port mappings
+- Language-agnostic — works with any OAuth2/OIDC client
+
+## Testing
+
+```bash
+pytest test_server.py -v   # 33 tests, no server process needed
+```

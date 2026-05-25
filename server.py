@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """
-eFaas Mock Server - A local mock of the eFaas OIDC/OAuth2 identity provider.
+eFaas Mock Server - A local mock of the eFaas OIDC/OAuth2 identity provider
+for development and testing without relying on the official eFaas server.
 
-Designed to work with the Javaabu/EFaas-Socialite Laravel package for
-local development and testing without relying on the official eFaas server.
+Implements standard OpenID Connect / OAuth2 endpoints. Works with any
+language or framework — Laravel, Express, Django, Rails, mobile apps, etc.
 
 Usage:
     pip install -r requirements.txt
@@ -13,28 +14,28 @@ Usage:
     SERVER_URL=http://localhost:5000 python server.py
 
 Environment variables:
-    SERVER_URL         - Base URL of this mock server (default: http://localhost:{PORT})
-    PORT               - Port to listen on (default: 5000)
-    HOST               - Host to bind to (default: 0.0.0.0)
-    DEBUG              - Enable debug mode (default: false)
+    SERVER_URL          - Base URL of this mock server (default: http://localhost:{PORT})
+    PORT                - Port to listen on (default: 5000)
+    HOST                - Host to bind to (default: 0.0.0.0)
+    DEBUG               - Enable debug mode (default: false)
     RSA_PRIVATE_KEY_PEM - Optional; provide your own RSA private key in PEM format
-    SEED_COUNT         - Number of pre-seeded accounts (default: 100)
+    SEED_COUNT          - Number of pre-seeded accounts (default: 100)
 
-Laravel .env configuration to connect to this mock:
-    EFAAS_CLIENT_ID=any-value
-    EFAAS_CLIENT_SECRET=any-value
-    EFAAS_REDIRECT_URI=http://localhost:8000/oauth/efaas/callback
-    EFAAS_MODE=development
-    EFAAS_API_URL=http://localhost:5000
+Example app configuration to connect to this mock:
+    client_id     = any-value
+    client_secret = any-value
+    redirect_uri  = http://localhost:8000/callback
+    efaas_mode    = development
+    efaas_api_url = http://localhost:5000
 
-Endpoints:
-    GET  /connect/authorize                      - OAuth2 authorization (login page)
+Endpoints (standard OIDC/OAuth2):
+    GET  /connect/authorize                      - Authorization (login page)
     POST /connect/authorize                      - Login submission
     POST /connect/token                          - Token exchange
-    POST /connect/userinfo                       - User info
+    POST /connect/userinfo                       - User info (Bearer token)
     GET  /.well-known/openid-configuration/jwks  - JWKS public keys
     GET  /connect/endsession                     - End session / logout
-    GET  /user/photo                             - User photo (base64)
+    GET  /user/photo                             - User avatar (base64 PNG)
     GET  /                                       - Server status
 """
 

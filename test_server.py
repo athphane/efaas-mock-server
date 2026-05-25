@@ -98,7 +98,7 @@ def _get_userinfo(client, access_token: str):
 
 def test_seeded_users():
     """Pre-seeded users exist."""
-    assert len(app_module.users) >= 101
+    assert len(app_module.users) >= 31
 
 
 def test_known_test_user():
@@ -137,7 +137,7 @@ def test_index(client):
     data = r.json()
     assert data["service"] == "eFaas Mock Server"
     assert data["framework"] == "FastAPI"
-    assert data["total_users"] >= 101
+    assert data["total_users"] >= 31
     assert "endpoints" in data
 
 

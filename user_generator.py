@@ -219,6 +219,13 @@ def seed_users(count: int = DEFAULT_SEED_COUNT):
     for _ in range(count):
         user = generate_user()
         users[user["sub"]] = user
+
+
+def seed_balanced_users(per_type: int = 10):
+    for user_type in ["Maldivian", "Work Permit Holder", "Foreigner"]:
+        for _ in range(per_type):
+            user = generate_user(user_type)
+            users[user["sub"]] = user
     test_user = {
         "sub": "3b46dc4b-f565-420b-af8f-9312c86e40cb",
         "first_name": "CSC", "middle_name": "Test User", "last_name": "18",
@@ -248,4 +255,4 @@ def seed_users(count: int = DEFAULT_SEED_COUNT):
     users[test_user["sub"]] = test_user
 
 
-seed_users()
+seed_balanced_users()

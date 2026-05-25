@@ -11,7 +11,7 @@ SERVER_URL = _raw_server_url.rstrip("/")
 ACCESS_TOKEN_TTL = 3600
 ID_TOKEN_TTL = 300
 AUTH_CODE_TTL = 600
-DEFAULT_SEED_COUNT = int(os.environ.get("SEED_COUNT", 100))
+DEFAULT_SEED_COUNT = int(os.environ.get("SEED_COUNT", 30))
 
 COUNTRY_CODES = {
     "Maldives": ("462", "MDV", "+960"),

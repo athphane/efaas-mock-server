@@ -20,6 +20,7 @@ from fastapi.testclient import TestClient
 import jwt as pyjwt
 from jwt.algorithms import RSAAlgorithm
 from jwt.utils import base64url_encode
+from cryptography.hazmat.primitives.asymmetric import rsa
 
 import server as app_module
 
@@ -506,6 +507,7 @@ def test_logout_ui_lists_active_sessions(client):
     r = client.get("/logout")
     assert r.status_code == 200
     assert "CSC Test User 18" in r.text
+    assert "A900318" in r.text
     assert "Logout this session" in r.text
     assert "Sample curl request" in r.text
     assert "curl -X POST" in r.text
@@ -619,6 +621,24 @@ def test_endsession_uses_redirect_uri_defaults_when_session_has_none(client, mon
     assert sid not in app_module.logout_sessions
     assert "http://ncs.test?state=test-state" in r.text
     assert "window.location.replace" in r.text
+
+
+def test_endsession_invalid_session_after_restart_returns_page(client, monkeypatch):
+    code = _do_login(client, "3b46dc4b-f565-420b-af8f-9312c86e40cb")
+    tokens = _exchange_code(client, code)
+
+    replacement_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    monkeypatch.setattr(app_module, "_public_key", replacement_key.public_key())
+
+    r = client.get(
+        "/connect/endsession",
+        params={"id_token_hint": tokens["id_token"]},
+        follow_redirects=False,
+    )
+
+    assert r.status_code == 200
+    assert "Invalid session" in r.text
+    assert "Session is no longer valid. The server may have restarted." in r.text
 
 
 # ──────────────────────────────────────────────

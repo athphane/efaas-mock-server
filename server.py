@@ -238,6 +238,7 @@ def _store_logout_session(sid: str, user: dict, client_id: str, id_token: str, s
         "sid": sid,
         "user_sub": user.get("sub", ""),
         "user_name": user.get("full_name") or user.get("name") or user.get("first_name") or sid,
+        "user_idnumber": user.get("idnumber", ""),
         "client_id": client_id,
         "id_token": id_token,
         "scope": scope,
@@ -252,12 +253,15 @@ def _store_logout_session(sid: str, user: dict, client_id: str, id_token: str, s
 def _decode_logout_hint(id_token_hint: str) -> dict:
     if not id_token_hint:
         return {}
-    return jwt.decode(
-        id_token_hint,
-        _public_key,
-        algorithms=["RS256"],
-        options={"verify_exp": False, "verify_aud": False},
-    )
+    try:
+        return jwt.decode(
+            id_token_hint,
+            _public_key,
+            algorithms=["RS256"],
+            options={"verify_exp": False, "verify_aud": False},
+        )
+    except jwt.InvalidTokenError as exc:
+        raise ValueError("Session is no longer valid. The server may have restarted.") from exc
 
 
 def _make_logout_token(session: dict) -> str:
@@ -759,7 +763,7 @@ def endsession(
                 state=state,
             )
         except ValueError as exc:
-            return JSONResponse({"error": "invalid_request", "error_description": str(exc)}, 400)
+            return _render_logout_result("Invalid session", str(exc), error=str(exc))
         if _should_redirect_after_logout(session):
             return _redirect_after_logout(session)
 

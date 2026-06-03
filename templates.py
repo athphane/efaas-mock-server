@@ -393,7 +393,7 @@ LOGOUT_PAGE = """<!DOCTYPE html>
         <form class="session-card" method="post" action="/logout">
           <input type="hidden" name="id_token_hint" value="{{ s.id_token }}">
           <div class="session-title">{{ s.user_name }}</div>
-          <div class="session-meta">Client: {{ s.client_id }}<br>SID: {{ s.sid }}</div>
+          <div class="session-meta">ID Number: {{ s.user_idnumber }}<br>Client: {{ s.client_id }}<br>SID: {{ s.sid }}</div>
           <label>Back-channel logout URI</label>
           <input name="backchannel_logout_uri" value="{{ s.backchannel_logout_uri }}" placeholder="https://your-site.example.com/backchannel/logout">
           <label>Post logout redirect URI</label>

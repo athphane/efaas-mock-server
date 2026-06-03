@@ -486,10 +486,11 @@ def test_endsession_redirects(client):
         "post_logout_redirect_uri": "http://example.com/logout",
         "state": "logout-state",
     }, follow_redirects=False)
-    assert r.status_code in (302, 307)
-    location = r.headers["location"]
-    assert "example.com/logout" in location
-    assert "logout-state" in location
+    assert r.status_code == 200
+    assert "Signing out" in r.text
+    assert "http://example.com/logout?state=logout-state" in r.text
+    assert "window.location.replace" in r.text
+    assert "Redirecting in <span id=\"countdown\">15</span> seconds" in r.text
 
 
 def test_endsession_no_redirect_returns_message(client):
@@ -506,6 +507,10 @@ def test_logout_ui_lists_active_sessions(client):
     assert r.status_code == 200
     assert "CSC Test User 18" in r.text
     assert "Logout this session" in r.text
+    assert "Sample curl request" in r.text
+    assert "curl -X POST" in r.text
+    assert "--data-urlencode" in r.text
+    assert "logout_token=" in r.text
 
 
 def test_logout_submit_posts_backchannel_logout(client, monkeypatch):
@@ -516,41 +521,43 @@ def test_logout_submit_posts_backchannel_logout(client, monkeypatch):
 
     captured = {}
 
-    class _Resp:
-        status_code = 200
+    class _Proc:
+        pass
 
-        def raise_for_status(self):
-            return None
+    def fake_popen(args, stdout=None, stderr=None):
+        captured["args"] = args
+        captured["stdout"] = stdout
+        captured["stderr"] = stderr
+        return _Proc()
 
-    def fake_post(url, data=None, timeout=None):
-        captured["url"] = url
-        captured["data"] = data
-        captured["timeout"] = timeout
-        return _Resp()
-
-    monkeypatch.setattr(app_module.httpx, "post", fake_post)
+    monkeypatch.setattr(app_module.subprocess, "Popen", fake_popen)
 
     r = client.post("/logout", data={
         "id_token_hint": tokens["id_token"],
         "backchannel_logout_uri": "http://example.com/backchannel/logout",
     }, follow_redirects=False)
-    assert r.status_code in (302, 307)
-    assert captured["url"] == "http://example.com/backchannel/logout"
-    assert "logout_token" in captured["data"]
-    logout_claims = pyjwt.decode(captured["data"]["logout_token"], app_module._public_key, algorithms=["RS256"], options={"verify_aud": False})
+    assert r.status_code == 200
+    assert captured["args"][4] == "http://example.com/backchannel/logout"
+    assert captured["args"][7] == "--data-urlencode"
+    assert captured["stdout"] is app_module.subprocess.DEVNULL
+    assert captured["stderr"] is app_module.subprocess.DEVNULL
+    logout_claims = pyjwt.decode(captured["args"][8].split("=", 1)[1], app_module._public_key, algorithms=["RS256"], options={"verify_aud": False})
     assert logout_claims["sid"] == sid
+    assert logout_claims["nbf"] <= logout_claims["exp"]
+    assert logout_claims["iat"] <= logout_claims["exp"]
     assert logout_claims["events"]["http://schemas.openid.net/event/backchannel-logout"] == {}
     assert sid not in app_module.logout_sessions
+    assert "Back-channel logout dispatched." in r.text
 
 
-def test_logout_submit_tolerates_backchannel_timeout(client, monkeypatch):
+def test_logout_submit_tolerates_backchannel_dispatch_failure(client, monkeypatch):
     code = _do_login(client, "3b46dc4b-f565-420b-af8f-9312c86e40cb")
     tokens = _exchange_code(client, code)
 
-    def fake_post(url, data=None, timeout=None):
-        raise app_module.httpx.TimeoutException("timed out")
+    def fake_popen(args, stdout=None, stderr=None):
+        raise OSError("spawn failed")
 
-    monkeypatch.setattr(app_module.httpx, "post", fake_post)
+    monkeypatch.setattr(app_module.subprocess, "Popen", fake_popen)
 
     r = client.post("/logout", data={
         "id_token_hint": tokens["id_token"],
@@ -559,6 +566,7 @@ def test_logout_submit_tolerates_backchannel_timeout(client, monkeypatch):
     assert r.status_code in (200, 302, 307)
     assert "Logout complete" in r.text or r.status_code in (302, 307)
     assert "Back-channel URI" in r.text or r.status_code in (302, 307)
+    assert "spawn failed" in r.text or r.status_code in (302, 307)
 
 
 def test_endsession_uses_stored_backchannel_uri(client, monkeypatch):
@@ -570,23 +578,18 @@ def test_endsession_uses_stored_backchannel_uri(client, monkeypatch):
 
     captured = {}
 
-    class _Resp:
-        status_code = 200
+    def fake_run(args, capture_output=None, text=None, check=None):
+        captured["args"] = args
+        return app_module.subprocess.CompletedProcess(args=args, returncode=0, stdout='{"success":true}\n__HTTP_STATUS__:200', stderr="")
 
-        def raise_for_status(self):
-            return None
-
-    def fake_post(url, data=None, timeout=None):
-        captured["url"] = url
-        captured["data"] = data
-        return _Resp()
-
-    monkeypatch.setattr(app_module.httpx, "post", fake_post)
+    monkeypatch.setattr(app_module.subprocess, "run", fake_run)
 
     r = client.get("/connect/endsession", params={"id_token_hint": tokens["id_token"]}, follow_redirects=False)
-    assert r.status_code in (302, 307)
-    assert captured["url"] == "http://example.com/stored-backchannel"
+    assert r.status_code == 200
+    assert captured["args"][4] == "http://example.com/stored-backchannel"
     assert sid not in app_module.logout_sessions
+    assert "http://localhost:8000?state=test-state" in r.text
+    assert "window.location.replace" in r.text
 
 
 def test_endsession_uses_redirect_uri_defaults_when_session_has_none(client, monkeypatch):
@@ -600,27 +603,22 @@ def test_endsession_uses_redirect_uri_defaults_when_session_has_none(client, mon
 
     captured = {}
 
-    class _Resp:
-        status_code = 200
+    def fake_run(args, capture_output=None, text=None, check=None):
+        captured["args"] = args
+        return app_module.subprocess.CompletedProcess(args=args, returncode=0, stdout='{"success":true}\n__HTTP_STATUS__:200', stderr="")
 
-        def raise_for_status(self):
-            return None
-
-    def fake_post(url, data=None, timeout=None):
-        captured["url"] = url
-        captured["data"] = data
-        return _Resp()
-
-    monkeypatch.setattr(app_module.httpx, "post", fake_post)
+    monkeypatch.setattr(app_module.subprocess, "run", fake_run)
 
     r = client.get(
         "/connect/endsession",
         params={"id_token_hint": tokens["id_token"]},
         follow_redirects=False,
     )
-    assert r.status_code in (302, 307)
-    assert captured["url"] == "http://ncs.test/oauth/efaas/logout"
+    assert r.status_code == 200
+    assert captured["args"][4] == "http://ncs.test/oauth/efaas/logout"
     assert sid not in app_module.logout_sessions
+    assert "http://ncs.test?state=test-state" in r.text
+    assert "window.location.replace" in r.text
 
 
 # ──────────────────────────────────────────────

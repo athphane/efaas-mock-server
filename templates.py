@@ -255,6 +255,8 @@ LOGOUT_PAGE = """<!DOCTYPE html>
   .session-card label { display: block; font-size: 12px; font-weight: 600; color: #555; margin: 10px 0 4px; }
   .session-card input { width: 100%; padding: 10px 12px; border: 2px solid #e0e0e0; border-radius: 6px; font-size: 13px; outline: none; }
   .session-card input:focus { border-color: #1a237e; }
+  .curl-sample { margin-top: 12px; }
+  .curl-sample textarea { width: 100%; min-height: 96px; padding: 10px 12px; background: #f6f8fa; border-radius: 8px; border: 1px solid #e5e7eb; font-size: 12px; color: #1f2937; resize: vertical; font-family: ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,'Liberation Mono','Courier New',monospace; }
   .btn { display: inline-flex; align-items: center; justify-content: center; padding: 11px 16px; font-size: 13px; font-weight: 700; border: none; border-radius: 8px; cursor: pointer; transition: all .15s; }
   .btn-primary { background: #1a237e; color: #fff; width: 100%; margin-top: 12px; }
   .btn-primary:hover { background: #283593; }
@@ -285,6 +287,10 @@ LOGOUT_PAGE = """<!DOCTYPE html>
       <input name="post_logout_redirect_uri" value="{{ s.post_logout_redirect_uri }}" placeholder="https://your-site.example.com/signed-out">
       <label>State</label>
       <input name="state" value="{{ s.state }}" placeholder="optional state">
+      <div class="curl-sample">
+        <label>Sample curl request</label>
+        <textarea readonly>{{ s.curl_command }}</textarea>
+      </div>
       <button type="submit" class="btn btn-primary">Logout this session</button>
     </form>
     {% endfor %}
@@ -320,6 +326,62 @@ LOGOUT_RESULT_PAGE = """<!DOCTYPE html>
   {% if error %}<p class="meta">Error: {{ error }}</p>{% endif %}
   <p><a href="/logout">Back to logout UI</a></p>
 </div>
+</body>
+</html>"""
+
+LOGOUT_REDIRECT_PAGE = """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>eFaas Mock \u2014 Signing Out</title>
+<style>
+  body { font-family: -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif; background: #f0f2f5; color: #333; }
+  .wrap { max-width: 760px; margin: 40px auto; padding: 24px; background: #fff; border-radius: 12px; box-shadow: 0 2px 8px rgba(0,0,0,.08); }
+  h1 { color: #1a237e; margin-bottom: 8px; }
+  p { margin-top: 10px; line-height: 1.5; }
+  .meta { color: #666; font-size: 13px; word-break: break-word; }
+  .countdown { margin: 18px 0 10px; font-size: 14px; font-weight: 600; color: #1f2937; }
+  .progress { margin-top: 10px; width: 100%; height: 10px; background: #e5e7eb; border-radius: 999px; overflow: hidden; }
+  .progress-bar { height: 100%; width: 100%; background: linear-gradient(90deg, #1a237e, #3949ab); transform-origin: left center; }
+  a { color: #1a237e; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>{{ title }}</h1>
+  <p>{{ message }}</p>
+  {% if backchannel_logout_uri %}<p class="meta">Back-channel URI: {{ backchannel_logout_uri }}</p>{% endif %}
+  <p class="meta">Redirecting to: {{ redirect_url }}</p>
+  <div class="countdown">Redirecting in <span id="countdown">15</span> seconds...</div>
+  <div class="progress"><div id="progress-bar" class="progress-bar"></div></div>
+  <p><a href="{{ redirect_url }}">Continue</a></p>
+</div>
+<script>
+  window.addEventListener('load', function () {
+    var redirectUrl = {{ redirect_url_json }};
+    var totalSeconds = 15;
+    var remainingSeconds = totalSeconds;
+    var countdownEl = document.getElementById('countdown');
+    var progressBarEl = document.getElementById('progress-bar');
+
+    function renderCountdown() {
+      countdownEl.textContent = String(remainingSeconds);
+      progressBarEl.style.width = ((remainingSeconds / totalSeconds) * 100) + '%';
+    }
+
+    renderCountdown();
+
+    var timer = window.setInterval(function () {
+      remainingSeconds -= 1;
+      renderCountdown();
+      if (remainingSeconds <= 0) {
+        window.clearInterval(timer);
+        window.location.replace(redirectUrl);
+      }
+    }, 1000);
+  });
+</script>
 </body>
 </html>"""
 

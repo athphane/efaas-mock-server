@@ -45,6 +45,8 @@ import os
 import json
 import uuid
 import hashlib
+import shlex
+import subprocess
 import time
 import io
 import base64 as b64
@@ -53,7 +55,6 @@ from urllib.parse import urlencode, urlparse
 
 from fastapi import FastAPI, Request, Form, Query
 from fastapi.responses import JSONResponse, HTMLResponse, RedirectResponse
-import httpx
 
 import jwt
 from PIL import Image, ImageDraw, ImageFont
@@ -62,12 +63,13 @@ from jinja2 import Template
 from constants import SERVER_URL, ACCESS_TOKEN_TTL, AUTH_CODE_TTL, COUNTRY_CODES, _HOST, _PORT
 from crypto import KID, _private_key, _public_key, _make_jwks, _make_access_token, _make_id_token
 from user_generator import users, _avatar_cache, generate_user
-from templates import LOGIN_PAGE, AUTO_POST_TEMPLATE, LOGOUT_PAGE, LOGOUT_RESULT_PAGE
+from templates import LOGIN_PAGE, AUTO_POST_TEMPLATE, LOGOUT_PAGE, LOGOUT_RESULT_PAGE, LOGOUT_REDIRECT_PAGE
 
 app = FastAPI(title="eFaas Mock Server", version="3.0.0")
 
 auth_codes: dict[str, dict] = {}
 logout_sessions: dict[str, dict] = {}
+LOGOUT_TOKEN_TTL = 300
 
 DEFAULT_SCOPES = ("openid", "efaas.profile")
 AVAILABLE_SCOPES = (
@@ -260,10 +262,13 @@ def _decode_logout_hint(id_token_hint: str) -> dict:
 
 
 def _make_logout_token(session: dict) -> str:
+    now = int(time.time())
     claims: dict[str, object] = {
         "iss": SERVER_URL,
         "aud": session.get("client_id", ""),
-        "iat": int(time.time()),
+        "iat": now,
+        "nbf": now,
+        "exp": now + LOGOUT_TOKEN_TTL,
         "jti": str(uuid.uuid4()).upper(),
         "events": {"http://schemas.openid.net/event/backchannel-logout": {}},
         "sid": session.get("sid", ""),
@@ -273,27 +278,83 @@ def _make_logout_token(session: dict) -> str:
     return jwt.encode(claims, _private_key, algorithm="RS256", headers={"alg": "RS256", "kid": KID, "typ": "logout+jwt"})
 
 
-def _backchannel_logout(session: dict, backchannel_logout_uri: str = "") -> dict:
+def _logout_curl_command(session: dict) -> str:
+    logout_uri = (session.get("backchannel_logout_uri", "") or "").strip()
+    logout_token = _make_logout_token(session)
+    return (
+        f"curl -X POST {shlex.quote(logout_uri)} "
+        "-H 'Content-Type: application/x-www-form-urlencoded' "
+        f"--data-urlencode {shlex.quote(f'logout_token={logout_token}')}"
+    )
+
+
+def _logout_curl_args(logout_uri: str, logout_token: str) -> list[str]:
+    return [
+        "curl",
+        "-sS",
+        "-X",
+        "POST",
+        logout_uri,
+        "-H",
+        "Content-Type: application/x-www-form-urlencoded",
+        "--data-urlencode",
+        f"logout_token={logout_token}",
+        "--write-out",
+        "\n__HTTP_STATUS__:%{http_code}",
+    ]
+
+
+def _parse_curl_response(stdout: str) -> tuple[str, int | None]:
+    marker = "\n__HTTP_STATUS__:"
+    if marker not in stdout:
+        return stdout.strip(), None
+    body, status = stdout.rsplit(marker, 1)
+    status_code = int(status.strip()) if status.strip().isdigit() else None
+    return body.strip(), status_code
+
+
+def _backchannel_logout(session: dict, backchannel_logout_uri: str = "", wait_for_response: bool = True) -> dict:
     logout_uri = (backchannel_logout_uri or session.get("backchannel_logout_uri", "")).strip()
     result = {"backchannel_logout_uri": logout_uri, "backchannel_sent": False}
     if not logout_uri:
         return result
 
     logout_token = _make_logout_token(session)
+    curl_args = _logout_curl_args(logout_uri, logout_token)
     try:
-        response = httpx.post(logout_uri, data={"logout_token": logout_token}, timeout=5.0)
-        response.raise_for_status()
-        result.update({"backchannel_sent": True, "backchannel_status": response.status_code})
-    except (httpx.TimeoutException, httpx.RequestError) as exc:
-        result["backchannel_error"] = str(exc)
-    except httpx.HTTPStatusError as exc:
+        if not wait_for_response:
+            subprocess.Popen(curl_args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            print(f"Back-channel logout dispatched to {logout_uri}")
+            result.update({"backchannel_sent": True, "backchannel_dispatched": True})
+            return result
+
+        completed = subprocess.run(
+            curl_args,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        response_body, status_code = _parse_curl_response(completed.stdout or "")
+        if completed.returncode == 0 and status_code is not None and 200 <= status_code < 300:
+            print(f"Back-channel logout response from {logout_uri}: status={status_code} body={response_body!r}")
+            result.update({"backchannel_sent": True, "backchannel_status": status_code})
+        else:
+            error_output = (completed.stderr or response_body or completed.stdout).strip()
+            if status_code is not None:
+                print(f"Back-channel logout returned HTTP {status_code} for {logout_uri}: body={response_body!r}")
+                result.update({"backchannel_status": status_code, "backchannel_error": error_output or f"HTTP {status_code}"})
+            else:
+                print(f"Back-channel logout request failed for {logout_uri}: curl exited {completed.returncode}: {error_output}")
+                result["backchannel_error"] = error_output or f"curl exited {completed.returncode}"
+    except OSError as exc:
+        print(f"Back-channel logout request failed for {logout_uri}: {type(exc).__name__}: {exc}")
         result["backchannel_error"] = str(exc)
     return result
 
 
 def _resolve_logout_session(request: Request, id_token_hint: str, backchannel_logout_uri: str = "",
-                            post_logout_redirect_uri: str = "", state: str = "",
-                            redirect_uri: str = "") -> dict:
+                             post_logout_redirect_uri: str = "", state: str = "",
+                             redirect_uri: str = "", wait_for_backchannel: bool = True) -> dict:
     claims = _decode_logout_hint(id_token_hint)
     sid = claims.get("sid", "")
     if not sid:
@@ -316,7 +377,7 @@ def _resolve_logout_session(request: Request, id_token_hint: str, backchannel_lo
     if not session["client_id"]:
         raise ValueError("id_token_hint is missing aud/client_id")
 
-    backchannel_result = _backchannel_logout(session, session["backchannel_logout_uri"])
+    backchannel_result = _backchannel_logout(session, session["backchannel_logout_uri"], wait_for_response=wait_for_backchannel)
     if sid in logout_sessions:
         del logout_sessions[sid]
 
@@ -325,6 +386,33 @@ def _resolve_logout_session(request: Request, id_token_hint: str, backchannel_lo
 
 def _render_logout_result(title: str, message: str, **kwargs) -> HTMLResponse:
     return _html(LOGOUT_RESULT_PAGE, title=title, message=message, **kwargs)
+
+
+def _should_redirect_after_logout(session: dict) -> bool:
+    return bool(session.get("post_logout_redirect_uri")) and not session.get("backchannel_logout_uri")
+
+
+def _redirect_after_logout(session: dict):
+    params = {}
+    if session.get("state"):
+        params["state"] = session["state"]
+    sep = "&" if "?" in session["post_logout_redirect_uri"] else "?"
+    redirect_url = session["post_logout_redirect_uri"] + (sep + urlencode(params) if params else "")
+    return _render_logout_redirect(redirect_url, session.get("backchannel_logout_uri", ""))
+
+
+def _render_logout_redirect(redirect_url: str, backchannel_logout_uri: str = ""):
+    message = "Logout complete. Returning you to the application."
+    if backchannel_logout_uri:
+        message = "Logout complete. Session invalidated and returning you to the application."
+    return _html(
+        LOGOUT_REDIRECT_PAGE,
+        title="Signing out",
+        message=message,
+        redirect_url=redirect_url,
+        redirect_url_json=json.dumps(redirect_url),
+        backchannel_logout_uri=backchannel_logout_uri,
+    )
 
 
 def _do_login(sub: str, oauth: dict, request: Request):
@@ -617,6 +705,7 @@ def logout_ui(request: Request):
             s["backchannel_logout_uri"] = defaults["backchannel_logout_uri"]
         if not s.get("post_logout_redirect_uri"):
             s["post_logout_redirect_uri"] = defaults["post_logout_redirect_uri"]
+        s["curl_command"] = _logout_curl_command(s)
         sessions.append(s)
     return _html(LOGOUT_PAGE, sessions=sessions)
 
@@ -631,19 +720,19 @@ async def logout_submit(request: Request):
             backchannel_logout_uri=form.get("backchannel_logout_uri", ""),
             post_logout_redirect_uri=form.get("post_logout_redirect_uri", ""),
             state=form.get("state", ""),
+            wait_for_backchannel=False,
         )
     except ValueError as exc:
         return _render_logout_result("Logout failed", str(exc), error=str(exc))
-    if session.get("post_logout_redirect_uri"):
-        params = {}
-        if session.get("state"):
-            params["state"] = session["state"]
-        sep = "&" if "?" in session["post_logout_redirect_uri"] else "?"
-        return RedirectResponse(url=session["post_logout_redirect_uri"] + (sep + urlencode(params) if params else ""))
+    if _should_redirect_after_logout(session):
+        return _redirect_after_logout(session)
 
     message = "Back-channel logout sent." if session.get("backchannel_sent") else "Logged out successfully."
+    if session.get("backchannel_dispatched"):
+        message = "Back-channel logout dispatched. Check your app if you need to confirm the session was invalidated."
     if session.get("backchannel_logout_uri") and not session.get("backchannel_sent"):
-        message = "Logout completed, but the back-channel request was not sent."
+        status = session.get("backchannel_status")
+        message = f"Logout completed, but the back-channel endpoint returned HTTP {status}." if status else "Logout completed, but the back-channel request was not sent."
     return _render_logout_result(
         "Logout complete",
         message,
@@ -672,12 +761,11 @@ def endsession(
             )
         except ValueError as exc:
             return JSONResponse({"error": "invalid_request", "error_description": str(exc)}, 400)
+        if _should_redirect_after_logout(session):
+            return _redirect_after_logout(session)
+
         if session.get("post_logout_redirect_uri"):
-            params = {}
-            if session.get("state"):
-                params["state"] = session["state"]
-            sep = "&" if "?" in session["post_logout_redirect_uri"] else "?"
-            return RedirectResponse(url=session["post_logout_redirect_uri"] + (sep + urlencode(params) if params else ""))
+            return _redirect_after_logout(session)
 
         return {
             "message": "Logged out successfully",
@@ -691,7 +779,7 @@ def endsession(
         if state:
             params["state"] = state
         sep = "&" if "?" in post_logout_redirect_uri else "?"
-        return RedirectResponse(url=post_logout_redirect_uri + sep + urlencode(params))
+        return _render_logout_redirect(post_logout_redirect_uri + sep + urlencode(params))
     return {"message": "Logged out successfully"}
 
 

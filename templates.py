@@ -9,6 +9,7 @@ LOGIN_PAGE = """<!DOCTYPE html>
   body { font-family: -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif; background: #f0f2f5; color: #333; min-height: 100vh; }
   .banner { background: linear-gradient(135deg,#1a237e,#283593); color: #fff; padding: 16px 24px; text-align: center; font-size: 13px; }
   .banner strong { font-size: 16px; }
+  .banner a { color: #fff; text-decoration: underline; margin-left: 12px; }
   .container { max-width: 960px; margin: 0 auto; padding: 24px 16px; }
   .tabs { display: flex; gap: 4px; margin-bottom: 24px; }
   .tab { flex: 1; padding: 12px; text-align: center; background: #e8eaed; border-radius: 8px 8px 0 0; cursor: pointer; font-weight: 600; font-size: 14px; transition: background .2s; user-select: none; }
@@ -54,11 +55,16 @@ LOGIN_PAGE = """<!DOCTYPE html>
   .scope-option small { display: block; font-size: 12px; color: #6b7280; margin-top: 2px; }
   .scope-option.required { background: #f3f5ff; border-color: #cdd4ff; }
   .scope-option.required input { cursor: not-allowed; }
+  .logout-box { margin: 18px 0 8px; padding: 14px; border: 2px solid #e8eaed; border-radius: 10px; background: #fffdf7; }
+  .logout-box .scope-title { margin-bottom: 8px; }
+  .logout-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px 16px; }
+  .logout-grid .full { grid-column: 1 / -1; }
 </style>
 </head>
 <body>
 <div class="banner">
   <strong>eFaas Mock Server</strong> — Development only. No real authentication.
+  <a href="/logout">Logout tester</a>
 </div>
 <div class="container">
 
@@ -103,6 +109,14 @@ LOGIN_PAGE = """<!DOCTYPE html>
         </div>
         <input type="hidden" name="scope" class="scope-value" value="{{ selected_scope_value }}">
       </div>
+      <div class="logout-box">
+        <div class="scope-title">Logout testing</div>
+        <div class="scope-note">Optional. Save a back-channel logout URL so this session can be signed out from the mock UI.</div>
+        <div class="logout-grid">
+          <div class="full"><label>Back-channel logout URI</label><input name="backchannel_logout_uri" value="{{ params.backchannel_logout_uri }}" placeholder="https://your-site.example.com/backchannel/logout"></div>
+          <div class="full"><label>Post logout redirect URI</label><input name="post_logout_redirect_uri" value="{{ params.post_logout_redirect_uri }}" placeholder="https://your-site.example.com/signed-out"></div>
+        </div>
+      </div>
       <button type="submit" class="btn btn-primary" id="btn-select" disabled>Sign In as Selected User</button>
     </form>
   </div>
@@ -126,6 +140,14 @@ LOGIN_PAGE = """<!DOCTYPE html>
           {% endfor %}
         </div>
         <input type="hidden" name="scope" class="scope-value" value="{{ selected_scope_value }}">
+      </div>
+      <div class="logout-box">
+        <div class="scope-title">Logout testing</div>
+        <div class="scope-note">Optional. Save a back-channel logout URL so this session can be signed out from the mock UI.</div>
+        <div class="logout-grid">
+          <div class="full"><label>Back-channel logout URI</label><input name="backchannel_logout_uri" value="{{ params.backchannel_logout_uri }}" placeholder="https://your-site.example.com/backchannel/logout"></div>
+          <div class="full"><label>Post logout redirect URI</label><input name="post_logout_redirect_uri" value="{{ params.post_logout_redirect_uri }}" placeholder="https://your-site.example.com/signed-out"></div>
+        </div>
       </div>
       <div class="form-grid">
         <div><label>First Name *</label><input name="first_name" required placeholder="Ahmed"></div>
@@ -207,6 +229,97 @@ function initScopePickers() {
 }
 document.addEventListener('DOMContentLoaded', initScopePickers);
 </script>
+</body>
+</html>"""
+
+LOGOUT_PAGE = """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>eFaas Mock — Logout</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif; background: #f0f2f5; color: #333; min-height: 100vh; }
+  .banner { background: linear-gradient(135deg,#3f51b5,#5c6bc0); color: #fff; padding: 16px 24px; text-align: center; font-size: 13px; }
+  .banner strong { font-size: 16px; }
+  .banner a { color: #fff; text-decoration: underline; margin-left: 12px; }
+  .container { max-width: 1080px; margin: 0 auto; padding: 24px 16px 40px; }
+  .intro { background: #fff; border-radius: 12px; padding: 18px 20px; box-shadow: 0 2px 8px rgba(0,0,0,.08); margin-bottom: 18px; }
+  .intro h1 { font-size: 22px; margin-bottom: 6px; color: #1a237e; }
+  .intro p { color: #666; font-size: 14px; line-height: 1.5; }
+  .session-grid { display: grid; grid-template-columns: repeat(auto-fill,minmax(320px,1fr)); gap: 14px; }
+  .session-card { background: #fff; border-radius: 12px; padding: 16px; box-shadow: 0 2px 8px rgba(0,0,0,.08); border: 2px solid #e8eaed; }
+  .session-title { font-size: 15px; font-weight: 700; color: #1a237e; margin-bottom: 6px; }
+  .session-meta { font-size: 12px; color: #666; margin-bottom: 12px; word-break: break-word; }
+  .session-card label { display: block; font-size: 12px; font-weight: 600; color: #555; margin: 10px 0 4px; }
+  .session-card input { width: 100%; padding: 10px 12px; border: 2px solid #e0e0e0; border-radius: 6px; font-size: 13px; outline: none; }
+  .session-card input:focus { border-color: #1a237e; }
+  .btn { display: inline-flex; align-items: center; justify-content: center; padding: 11px 16px; font-size: 13px; font-weight: 700; border: none; border-radius: 8px; cursor: pointer; transition: all .15s; }
+  .btn-primary { background: #1a237e; color: #fff; width: 100%; margin-top: 12px; }
+  .btn-primary:hover { background: #283593; }
+  .empty { background: #fff; border-radius: 12px; padding: 24px; text-align: center; color: #777; box-shadow: 0 2px 8px rgba(0,0,0,.08); }
+</style>
+</head>
+<body>
+<div class="banner">
+  <strong>eFaas Mock Server</strong> — Back-channel logout tester.
+  <a href="/">Status</a>
+  <a href="/connect/authorize">Login</a>
+</div>
+<div class="container">
+  <div class="intro">
+    <h1>Logout active sessions</h1>
+    <p>Pick a session, paste the relying party's back-channel logout URI if needed, and the mock server will POST a logout token to it.</p>
+  </div>
+  {% if sessions %}
+  <div class="session-grid">
+    {% for s in sessions %}
+    <form class="session-card" method="post" action="/logout">
+      <input type="hidden" name="id_token_hint" value="{{ s.id_token }}">
+      <div class="session-title">{{ s.user_name }}</div>
+      <div class="session-meta">Client: {{ s.client_id }}<br>SID: {{ s.sid }}</div>
+      <label>Back-channel logout URI</label>
+      <input name="backchannel_logout_uri" value="{{ s.backchannel_logout_uri }}" placeholder="https://your-site.example.com/backchannel/logout">
+      <label>Post logout redirect URI</label>
+      <input name="post_logout_redirect_uri" value="{{ s.post_logout_redirect_uri }}" placeholder="https://your-site.example.com/signed-out">
+      <label>State</label>
+      <input name="state" value="{{ s.state }}" placeholder="optional state">
+      <button type="submit" class="btn btn-primary">Logout this session</button>
+    </form>
+    {% endfor %}
+  </div>
+  {% else %}
+  <div class="empty">No active sessions yet. Sign in through the mock first.</div>
+  {% endif %}
+</div>
+</body>
+</html>"""
+
+LOGOUT_RESULT_PAGE = """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>eFaas Mock — Logout Result</title>
+<style>
+  body { font-family: -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif; background: #f0f2f5; color: #333; }
+  .wrap { max-width: 760px; margin: 40px auto; padding: 24px; background: #fff; border-radius: 12px; box-shadow: 0 2px 8px rgba(0,0,0,.08); }
+  h1 { color: #1a237e; margin-bottom: 8px; }
+  p { margin-top: 10px; line-height: 1.5; }
+  .meta { color: #666; font-size: 13px; }
+  a { color: #1a237e; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>{{ title }}</h1>
+  <p>{{ message }}</p>
+  {% if backchannel_logout_uri %}<p class="meta">Back-channel URI: {{ backchannel_logout_uri }}</p>{% endif %}
+  {% if post_logout_redirect_uri %}<p class="meta">Post logout redirect URI: {{ post_logout_redirect_uri }}</p>{% endif %}
+  {% if error %}<p class="meta">Error: {{ error }}</p>{% endif %}
+  <p><a href="/logout">Back to logout UI</a></p>
+</div>
 </body>
 </html>"""
 

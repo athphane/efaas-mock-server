@@ -72,6 +72,8 @@ services:
       - SERVER_URL=http://efaas:5000
 ```
 
+If you want the mock container to reach services running on the host machine, use `network_mode: host` on Linux.
+
 ## Login Flow
 
 1. Your app redirects to `/connect/authorize`
@@ -80,6 +82,12 @@ services:
    - **Create New User** — fill in a form with name, DOB, gender, ID number, etc; created accounts are saved and reusable
 3. On sign-in, the mock POST-redirects back to your app with `code`, `id_token`, `scope`, and `state`
 4. Your app exchanges the code for tokens, fetches the user profile, and validates JWT signatures via JWKS
+
+## Logout Testing
+
+- Visit `/logout` to see active mock sessions and trigger a back-channel logout POST
+- You can also call `/connect/endsession?id_token_hint=...` directly if you want to simulate a standard OIDC logout
+- The back-channel POST sends `logout_token` as form data to the URI you provide in the UI
 
 ## User Avatars
 
@@ -96,6 +104,7 @@ The photo URL in the user profile is generated **dynamically from the incoming r
 | `/connect/userinfo` | POST/GET | Returns user profile (Bearer token) |
 | `/.well-known/openid-configuration/jwks` | GET | JWKS public keys for JWT validation |
 | `/connect/endsession` | GET | Logout redirect |
+| `/logout` | GET/POST | Logout UI and back-channel tester |
 | `/user/photo` | GET | User avatar (300x300 PNG base64) |
 
 ## Environment Variables

@@ -34,6 +34,13 @@ def client():
     return TestClient(app, base_url="http://testserver")
 
 
+@pytest.fixture(autouse=True)
+def _clear_logout_sessions():
+    app_module.logout_sessions.clear()
+    yield
+    app_module.logout_sessions.clear()
+
+
 # ──────────────────────────────────────────────
 # Shared auth helpers
 # ──────────────────────────────────────────────
@@ -167,6 +174,14 @@ def test_login_page_prompts_for_scopes(client):
     assert "Scopes" in r.text
     assert 'value="openid efaas.profile"' in r.text
     assert 'data-scope-choice value="efaas.email"' in r.text
+
+
+def test_login_page_prefills_logout_defaults_from_redirect_uri(client):
+    params = _oauth_params({"redirect_uri": "http://ncs.test/oauth/efaas/callback"})
+    r = client.get("/connect/authorize", params=params)
+    assert r.status_code == 200
+    assert 'value="http://ncs.test/oauth/efaas/logout"' in r.text
+    assert 'value="http://ncs.test"' in r.text
 
 
 # ──────────────────────────────────────────────
@@ -481,6 +496,131 @@ def test_endsession_no_redirect_returns_message(client):
     r = client.get("/connect/endsession")
     assert r.status_code == 200
     assert r.json()["message"] == "Logged out successfully"
+
+
+def test_logout_ui_lists_active_sessions(client):
+    code = _do_login(client, "3b46dc4b-f565-420b-af8f-9312c86e40cb")
+    _exchange_code(client, code)
+
+    r = client.get("/logout")
+    assert r.status_code == 200
+    assert "CSC Test User 18" in r.text
+    assert "Logout this session" in r.text
+
+
+def test_logout_submit_posts_backchannel_logout(client, monkeypatch):
+    code = _do_login(client, "3b46dc4b-f565-420b-af8f-9312c86e40cb")
+    tokens = _exchange_code(client, code)
+    decoded = pyjwt.decode(tokens["id_token"], app_module._public_key, algorithms=["RS256"], options={"verify_aud": False})
+    sid = decoded["sid"]
+
+    captured = {}
+
+    class _Resp:
+        status_code = 200
+
+        def raise_for_status(self):
+            return None
+
+    def fake_post(url, data=None, timeout=None):
+        captured["url"] = url
+        captured["data"] = data
+        captured["timeout"] = timeout
+        return _Resp()
+
+    monkeypatch.setattr(app_module.httpx, "post", fake_post)
+
+    r = client.post("/logout", data={
+        "id_token_hint": tokens["id_token"],
+        "backchannel_logout_uri": "http://example.com/backchannel/logout",
+    }, follow_redirects=False)
+    assert r.status_code in (302, 307)
+    assert captured["url"] == "http://example.com/backchannel/logout"
+    assert "logout_token" in captured["data"]
+    logout_claims = pyjwt.decode(captured["data"]["logout_token"], app_module._public_key, algorithms=["RS256"], options={"verify_aud": False})
+    assert logout_claims["sid"] == sid
+    assert logout_claims["events"]["http://schemas.openid.net/event/backchannel-logout"] == {}
+    assert sid not in app_module.logout_sessions
+
+
+def test_logout_submit_tolerates_backchannel_timeout(client, monkeypatch):
+    code = _do_login(client, "3b46dc4b-f565-420b-af8f-9312c86e40cb")
+    tokens = _exchange_code(client, code)
+
+    def fake_post(url, data=None, timeout=None):
+        raise app_module.httpx.TimeoutException("timed out")
+
+    monkeypatch.setattr(app_module.httpx, "post", fake_post)
+
+    r = client.post("/logout", data={
+        "id_token_hint": tokens["id_token"],
+        "backchannel_logout_uri": "http://ncs.test/oauth/efaas/logout",
+    }, follow_redirects=False)
+    assert r.status_code in (200, 302, 307)
+    assert "Logout complete" in r.text or r.status_code in (302, 307)
+    assert "Back-channel URI" in r.text or r.status_code in (302, 307)
+
+
+def test_endsession_uses_stored_backchannel_uri(client, monkeypatch):
+    code = _do_login(client, "3b46dc4b-f565-420b-af8f-9312c86e40cb")
+    tokens = _exchange_code(client, code)
+    decoded = pyjwt.decode(tokens["id_token"], app_module._public_key, algorithms=["RS256"], options={"verify_aud": False})
+    sid = decoded["sid"]
+    app_module.logout_sessions[sid]["backchannel_logout_uri"] = "http://example.com/stored-backchannel"
+
+    captured = {}
+
+    class _Resp:
+        status_code = 200
+
+        def raise_for_status(self):
+            return None
+
+    def fake_post(url, data=None, timeout=None):
+        captured["url"] = url
+        captured["data"] = data
+        return _Resp()
+
+    monkeypatch.setattr(app_module.httpx, "post", fake_post)
+
+    r = client.get("/connect/endsession", params={"id_token_hint": tokens["id_token"]}, follow_redirects=False)
+    assert r.status_code in (302, 307)
+    assert captured["url"] == "http://example.com/stored-backchannel"
+    assert sid not in app_module.logout_sessions
+
+
+def test_endsession_uses_redirect_uri_defaults_when_session_has_none(client, monkeypatch):
+    params = _oauth_params({"redirect_uri": "http://ncs.test/oauth/efaas/callback"})
+    code = _do_login(client, "3b46dc4b-f565-420b-af8f-9312c86e40cb", params=params)
+    tokens = _exchange_code(client, code, params)
+    decoded = pyjwt.decode(tokens["id_token"], app_module._public_key, algorithms=["RS256"], options={"verify_aud": False})
+    sid = decoded["sid"]
+    app_module.logout_sessions[sid]["backchannel_logout_uri"] = ""
+    app_module.logout_sessions[sid]["post_logout_redirect_uri"] = ""
+
+    captured = {}
+
+    class _Resp:
+        status_code = 200
+
+        def raise_for_status(self):
+            return None
+
+    def fake_post(url, data=None, timeout=None):
+        captured["url"] = url
+        captured["data"] = data
+        return _Resp()
+
+    monkeypatch.setattr(app_module.httpx, "post", fake_post)
+
+    r = client.get(
+        "/connect/endsession",
+        params={"id_token_hint": tokens["id_token"]},
+        follow_redirects=False,
+    )
+    assert r.status_code in (302, 307)
+    assert captured["url"] == "http://ncs.test/oauth/efaas/logout"
+    assert sid not in app_module.logout_sessions
 
 
 # ──────────────────────────────────────────────

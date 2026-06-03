@@ -35,6 +35,8 @@ Endpoints (standard OIDC/OAuth2):
     POST /connect/userinfo                       - User info (Bearer token)
     GET  /.well-known/openid-configuration/jwks  - JWKS public keys
     GET  /connect/endsession                     - End session / logout
+    GET  /logout                                 - Logout UI / back-channel tester
+    POST /logout                                 - Logout form submission
     GET  /user/photo                             - User avatar (base64 PNG)
     GET  /                                       - Server status
 """
@@ -47,10 +49,11 @@ import time
 import io
 import base64 as b64
 from datetime import datetime
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse
 
 from fastapi import FastAPI, Request, Form, Query
 from fastapi.responses import JSONResponse, HTMLResponse, RedirectResponse
+import httpx
 
 import jwt
 from PIL import Image, ImageDraw, ImageFont
@@ -59,11 +62,12 @@ from jinja2 import Template
 from constants import SERVER_URL, ACCESS_TOKEN_TTL, AUTH_CODE_TTL, COUNTRY_CODES, _HOST, _PORT
 from crypto import KID, _private_key, _public_key, _make_jwks, _make_access_token, _make_id_token
 from user_generator import users, _avatar_cache, generate_user
-from templates import LOGIN_PAGE, AUTO_POST_TEMPLATE
+from templates import LOGIN_PAGE, AUTO_POST_TEMPLATE, LOGOUT_PAGE, LOGOUT_RESULT_PAGE
 
 app = FastAPI(title="eFaas Mock Server", version="3.0.0")
 
 auth_codes: dict[str, dict] = {}
+logout_sessions: dict[str, dict] = {}
 
 DEFAULT_SCOPES = ("openid", "efaas.profile")
 AVAILABLE_SCOPES = (
@@ -174,6 +178,8 @@ def _oauth_params(request: Request) -> dict:
         "response_mode": request.query_params.get("response_mode", "form_post"),
         "code_challenge": request.query_params.get("code_challenge", ""),
         "code_challenge_method": request.query_params.get("code_challenge_method", ""),
+        "backchannel_logout_uri": request.query_params.get("backchannel_logout_uri", ""),
+        "post_logout_redirect_uri": request.query_params.get("post_logout_redirect_uri", ""),
     }
 
 
@@ -185,6 +191,36 @@ def _photo_url(request: Request) -> str:
     return f"{SERVER_URL}/user/photo"
 
 
+def _site_origin(request: Request) -> str:
+    host = request.headers.get("host", "")
+    scheme = request.url.scheme or "http"
+    if host:
+        return f"{scheme}://{host}"
+    return SERVER_URL
+
+
+def _origin_from_url(url: str) -> str:
+    parsed = urlparse((url or "").strip())
+    if parsed.scheme and parsed.netloc:
+        return f"{parsed.scheme}://{parsed.netloc}".rstrip("/")
+    return ""
+
+
+def _logout_defaults(request: Request, redirect_uri: str = "") -> dict:
+    origin = _origin_from_url(redirect_uri) or _site_origin(request)
+    return {
+        "backchannel_logout_uri": f"{origin}/oauth/efaas/logout",
+        "post_logout_redirect_uri": origin,
+    }
+
+
+def _apply_logout_defaults(oauth: dict, request: Request):
+    defaults = _logout_defaults(request, oauth.get("redirect_uri", ""))
+    for key, value in defaults.items():
+        if not oauth.get(key):
+            oauth[key] = value
+
+
 def _html(template_str: str, status_code: int = 200, **kwargs) -> HTMLResponse:
     return HTMLResponse(content=Template(template_str).render(**kwargs), status_code=status_code)
 
@@ -192,6 +228,103 @@ def _html(template_str: str, status_code: int = 200, **kwargs) -> HTMLResponse:
 def _error_html(message: str, detail: str = "", status_code: int = 400) -> HTMLResponse:
     body = f"<h3>{message}</h3>" + (f"<p>{detail}</p>" if detail else "")
     return HTMLResponse(content=body, status_code=status_code)
+
+
+def _store_logout_session(sid: str, user: dict, client_id: str, id_token: str, scope: str,
+                          backchannel_logout_uri: str = "", post_logout_redirect_uri: str = "",
+                          state: str = "", redirect_uri: str = ""):
+    logout_sessions[sid] = {
+        "sid": sid,
+        "user_sub": user.get("sub", ""),
+        "user_name": user.get("full_name") or user.get("name") or user.get("first_name") or sid,
+        "client_id": client_id,
+        "id_token": id_token,
+        "scope": scope,
+        "backchannel_logout_uri": backchannel_logout_uri.strip(),
+        "post_logout_redirect_uri": post_logout_redirect_uri.strip(),
+        "state": state,
+        "redirect_uri": redirect_uri.strip(),
+        "created_at": time.time(),
+    }
+
+
+def _decode_logout_hint(id_token_hint: str) -> dict:
+    if not id_token_hint:
+        return {}
+    return jwt.decode(
+        id_token_hint,
+        _public_key,
+        algorithms=["RS256"],
+        options={"verify_exp": False, "verify_aud": False},
+    )
+
+
+def _make_logout_token(session: dict) -> str:
+    claims: dict[str, object] = {
+        "iss": SERVER_URL,
+        "aud": session.get("client_id", ""),
+        "iat": int(time.time()),
+        "jti": str(uuid.uuid4()).upper(),
+        "events": {"http://schemas.openid.net/event/backchannel-logout": {}},
+        "sid": session.get("sid", ""),
+    }
+    if session.get("user_sub"):
+        claims["sub"] = session["user_sub"]
+    return jwt.encode(claims, _private_key, algorithm="RS256", headers={"alg": "RS256", "kid": KID, "typ": "logout+jwt"})
+
+
+def _backchannel_logout(session: dict, backchannel_logout_uri: str = "") -> dict:
+    logout_uri = (backchannel_logout_uri or session.get("backchannel_logout_uri", "")).strip()
+    result = {"backchannel_logout_uri": logout_uri, "backchannel_sent": False}
+    if not logout_uri:
+        return result
+
+    logout_token = _make_logout_token(session)
+    try:
+        response = httpx.post(logout_uri, data={"logout_token": logout_token}, timeout=5.0)
+        response.raise_for_status()
+        result.update({"backchannel_sent": True, "backchannel_status": response.status_code})
+    except (httpx.TimeoutException, httpx.RequestError) as exc:
+        result["backchannel_error"] = str(exc)
+    except httpx.HTTPStatusError as exc:
+        result["backchannel_error"] = str(exc)
+    return result
+
+
+def _resolve_logout_session(request: Request, id_token_hint: str, backchannel_logout_uri: str = "",
+                            post_logout_redirect_uri: str = "", state: str = "",
+                            redirect_uri: str = "") -> dict:
+    claims = _decode_logout_hint(id_token_hint)
+    sid = claims.get("sid", "")
+    if not sid:
+        raise ValueError("id_token_hint is missing sid")
+
+    stored = logout_sessions.get(sid, {})
+    defaults = _logout_defaults(request, stored.get("redirect_uri", "") or redirect_uri)
+    session = {
+        "sid": sid,
+        "client_id": stored.get("client_id") or claims.get("aud", ""),
+        "user_sub": stored.get("user_sub") or claims.get("sub", ""),
+        "user_name": stored.get("user_name") or claims.get("name") or claims.get("sub", sid),
+        "id_token": stored.get("id_token") or id_token_hint,
+        "scope": stored.get("scope", ""),
+        "backchannel_logout_uri": backchannel_logout_uri or stored.get("backchannel_logout_uri", "") or defaults["backchannel_logout_uri"],
+        "post_logout_redirect_uri": post_logout_redirect_uri or stored.get("post_logout_redirect_uri", "") or defaults["post_logout_redirect_uri"],
+        "state": state or stored.get("state", ""),
+    }
+
+    if not session["client_id"]:
+        raise ValueError("id_token_hint is missing aud/client_id")
+
+    backchannel_result = _backchannel_logout(session, session["backchannel_logout_uri"])
+    if sid in logout_sessions:
+        del logout_sessions[sid]
+
+    return {**session, **backchannel_result}
+
+
+def _render_logout_result(title: str, message: str, **kwargs) -> HTMLResponse:
+    return _html(LOGOUT_RESULT_PAGE, title=title, message=message, **kwargs)
 
 
 def _do_login(sub: str, oauth: dict, request: Request):
@@ -225,6 +358,18 @@ def _do_login(sub: str, oauth: dict, request: Request):
         "code_challenge": oauth.get("code_challenge", ""),
         "code_challenge_method": oauth.get("code_challenge_method", ""),
     }
+
+    _store_logout_session(
+        sid=sid,
+        user=user,
+        client_id=oauth["client_id"],
+        id_token=id_token,
+        scope=scope,
+        backchannel_logout_uri=oauth.get("backchannel_logout_uri", ""),
+        post_logout_redirect_uri=oauth.get("post_logout_redirect_uri", ""),
+        state=oauth.get("state", ""),
+        redirect_uri=oauth.get("redirect_uri", ""),
+    )
 
     session_state = f"{uuid.uuid4().hex}.{uuid.uuid4().hex}"
 
@@ -322,6 +467,7 @@ def index():
             "userinfo": f"{SERVER_URL}/connect/userinfo",
             "jwks": f"{SERVER_URL}/.well-known/openid-configuration/jwks",
             "end_session": f"{SERVER_URL}/connect/endsession",
+            "logout_ui": f"{SERVER_URL}/logout",
         },
         "key_id": KID,
     }
@@ -333,6 +479,7 @@ def authorize_get(request: Request,
                   sort: str = Query(default="name")):
     _cleanup_expired_codes()
     oauth = _oauth_params(request)
+    _apply_logout_defaults(oauth, request)
     user_list = _get_user_list(search=search, sort=sort)
     selected_scopes = oauth["scope"].split()
     return _html(LOGIN_PAGE,
@@ -357,6 +504,7 @@ async def authorize_post(request: Request):
         if key in form:
             oauth[key] = form[key]
     oauth["scope"] = _normalize_scopes(oauth.get("scope", ""))
+    _apply_logout_defaults(oauth, request)
 
     action = form.get("action", "auto")
 
@@ -459,11 +607,85 @@ def jwks():
     return _make_jwks()
 
 
+@app.get("/logout")
+def logout_ui(request: Request):
+    sessions = []
+    for session in sorted(logout_sessions.values(), key=lambda s: s.get("created_at", 0), reverse=True):
+        s = dict(session)
+        defaults = _logout_defaults(request, s.get("redirect_uri", ""))
+        if not s.get("backchannel_logout_uri"):
+            s["backchannel_logout_uri"] = defaults["backchannel_logout_uri"]
+        if not s.get("post_logout_redirect_uri"):
+            s["post_logout_redirect_uri"] = defaults["post_logout_redirect_uri"]
+        sessions.append(s)
+    return _html(LOGOUT_PAGE, sessions=sessions)
+
+
+@app.post("/logout")
+async def logout_submit(request: Request):
+    form = await request.form()
+    try:
+        session = _resolve_logout_session(
+            request,
+            form.get("id_token_hint", ""),
+            backchannel_logout_uri=form.get("backchannel_logout_uri", ""),
+            post_logout_redirect_uri=form.get("post_logout_redirect_uri", ""),
+            state=form.get("state", ""),
+        )
+    except ValueError as exc:
+        return _render_logout_result("Logout failed", str(exc), error=str(exc))
+    if session.get("post_logout_redirect_uri"):
+        params = {}
+        if session.get("state"):
+            params["state"] = session["state"]
+        sep = "&" if "?" in session["post_logout_redirect_uri"] else "?"
+        return RedirectResponse(url=session["post_logout_redirect_uri"] + (sep + urlencode(params) if params else ""))
+
+    message = "Back-channel logout sent." if session.get("backchannel_sent") else "Logged out successfully."
+    if session.get("backchannel_logout_uri") and not session.get("backchannel_sent"):
+        message = "Logout completed, but the back-channel request was not sent."
+    return _render_logout_result(
+        "Logout complete",
+        message,
+        backchannel_logout_uri=session.get("backchannel_logout_uri", ""),
+        post_logout_redirect_uri=session.get("post_logout_redirect_uri", ""),
+        error=session.get("backchannel_error", ""),
+    )
+
+
 @app.get("/connect/endsession")
 def endsession(
+    request: Request,
+    id_token_hint: str = Query(default=""),
     post_logout_redirect_uri: str = Query(default=""),
     state: str = Query(default=""),
+    backchannel_logout_uri: str = Query(default=""),
 ):
+    if id_token_hint or backchannel_logout_uri:
+        try:
+            session = _resolve_logout_session(
+                request,
+                id_token_hint,
+                backchannel_logout_uri=backchannel_logout_uri,
+                post_logout_redirect_uri=post_logout_redirect_uri,
+                state=state,
+            )
+        except ValueError as exc:
+            return JSONResponse({"error": "invalid_request", "error_description": str(exc)}, 400)
+        if session.get("post_logout_redirect_uri"):
+            params = {}
+            if session.get("state"):
+                params["state"] = session["state"]
+            sep = "&" if "?" in session["post_logout_redirect_uri"] else "?"
+            return RedirectResponse(url=session["post_logout_redirect_uri"] + (sep + urlencode(params) if params else ""))
+
+        return {
+            "message": "Logged out successfully",
+            "backchannel_sent": session.get("backchannel_sent", False),
+            "backchannel_logout_uri": session.get("backchannel_logout_uri", ""),
+            "backchannel_error": session.get("backchannel_error", ""),
+        }
+
     if post_logout_redirect_uri:
         params = {}
         if state:

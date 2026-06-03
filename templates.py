@@ -44,6 +44,16 @@ LOGIN_PAGE = """<!DOCTYPE html>
   .pick-hint { font-size: 13px; color: #888; margin-bottom: 16px; text-align: center; }
   .selected-info { background: #e8eaff; border: 2px solid #1a237e; border-radius: 8px; padding: 10px 14px; margin-top: 14px; font-size: 13px; display: none; }
   .selected-info.show { display: block; }
+  .scope-box { margin: 18px 0 8px; padding: 14px; border: 2px solid #e8eaed; border-radius: 10px; background: #fafbff; }
+  .scope-title { font-size: 14px; font-weight: 700; color: #1a237e; margin-bottom: 4px; }
+  .scope-note { font-size: 12px; color: #666; margin-bottom: 12px; }
+  .scope-grid { display: grid; grid-template-columns: repeat(auto-fill,minmax(220px,1fr)); gap: 10px; }
+  .scope-option { display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px; border: 1px solid #dfe3ea; border-radius: 8px; background: #fff; cursor: pointer; }
+  .scope-option input { width: auto; margin-top: 2px; }
+  .scope-option strong { display: block; font-size: 13px; color: #333; }
+  .scope-option small { display: block; font-size: 12px; color: #6b7280; margin-top: 2px; }
+  .scope-option.required { background: #f3f5ff; border-color: #cdd4ff; }
+  .scope-option.required input { cursor: not-allowed; }
 </style>
 </head>
 <body>
@@ -80,6 +90,19 @@ LOGIN_PAGE = """<!DOCTYPE html>
       {% endfor %}
       <input type="hidden" name="action" value="select">
       <input type="hidden" name="sub" id="selected-sub" value="">
+      <div class="scope-box">
+        <div class="scope-title">Scopes</div>
+        <div class="scope-note">OpenID and eFaas profile are always included. Pick any additional scopes you want to request.</div>
+        <div class="scope-grid">
+          {% for scope, label, desc in scope_options %}
+          <label class="scope-option {% if scope in selected_scopes and scope in ['openid', 'efaas.profile'] %}required{% endif %}">
+            <input type="checkbox" data-scope-choice value="{{ scope }}" {% if scope in selected_scopes %}checked{% endif %} {% if scope in ['openid', 'efaas.profile'] %}disabled{% endif %}>
+            <span><strong>{{ label }}</strong><small>{{ desc }}</small></span>
+          </label>
+          {% endfor %}
+        </div>
+        <input type="hidden" name="scope" class="scope-value" value="{{ selected_scope_value }}">
+      </div>
       <button type="submit" class="btn btn-primary" id="btn-select" disabled>Sign In as Selected User</button>
     </form>
   </div>
@@ -91,6 +114,19 @@ LOGIN_PAGE = """<!DOCTYPE html>
       <input type="hidden" name="{{ key }}" value="{{ val }}">
       {% endfor %}
       <input type="hidden" name="action" value="create">
+      <div class="scope-box">
+        <div class="scope-title">Scopes</div>
+        <div class="scope-note">OpenID and eFaas profile are always included. Pick any additional scopes you want to request.</div>
+        <div class="scope-grid">
+          {% for scope, label, desc in scope_options %}
+          <label class="scope-option {% if scope in selected_scopes and scope in ['openid', 'efaas.profile'] %}required{% endif %}">
+            <input type="checkbox" data-scope-choice value="{{ scope }}" {% if scope in selected_scopes %}checked{% endif %} {% if scope in ['openid', 'efaas.profile'] %}disabled{% endif %}>
+            <span><strong>{{ label }}</strong><small>{{ desc }}</small></span>
+          </label>
+          {% endfor %}
+        </div>
+        <input type="hidden" name="scope" class="scope-value" value="{{ selected_scope_value }}">
+      </div>
       <div class="form-grid">
         <div><label>First Name *</label><input name="first_name" required placeholder="Ahmed"></div>
         <div><label>Last Name *</label><input name="last_name" required placeholder="Rasheed"></div>
@@ -151,6 +187,25 @@ function toggleFields() {
   document.getElementById('passport-group').style.display = (t==='Work Permit Holder'||t==='Foreigner') ? '' : 'none';
   document.getElementById('workpermit-group').style.display = (t==='Work Permit Holder') ? '' : 'none';
 }
+function syncScopeValue(form) {
+  var hidden = form.querySelector('.scope-value');
+  var scopes = [];
+  form.querySelectorAll('[data-scope-choice]').forEach(function(cb) {
+    if (cb.checked || cb.disabled) scopes.push(cb.value);
+  });
+  hidden.value = Array.from(new Set(scopes)).join(' ');
+}
+function initScopePickers() {
+  document.querySelectorAll('form').forEach(function(form) {
+    var hidden = form.querySelector('.scope-value');
+    if (!hidden) return;
+    form.querySelectorAll('[data-scope-choice]').forEach(function(cb) {
+      cb.addEventListener('change', function() { syncScopeValue(form); });
+    });
+    syncScopeValue(form);
+  });
+}
+document.addEventListener('DOMContentLoaded', initScopePickers);
 </script>
 </body>
 </html>"""

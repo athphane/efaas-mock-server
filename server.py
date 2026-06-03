@@ -65,12 +65,81 @@ app = FastAPI(title="eFaas Mock Server", version="3.0.0")
 
 auth_codes: dict[str, dict] = {}
 
+DEFAULT_SCOPES = ("openid", "efaas.profile")
+AVAILABLE_SCOPES = (
+    ("openid", "OpenID", "Required for sign-in"),
+    ("efaas.profile", "eFaas Profile", "Required user profile claims"),
+    ("efaas.email", "eFaas Email", "Email address"),
+    ("efaas.mobile", "eFaas Mobile", "Mobile number"),
+    ("efaas.birthdate", "eFaas Birthdate", "Date of birth"),
+    ("efaas.photo", "eFaas Photo", "User avatar"),
+    ("efaas.work_permit_status", "Work Permit Status", "Work permit flag"),
+    ("efaas.passport_number", "Passport Number", "Passport number"),
+    ("efaas.country", "Country", "Country claims"),
+    ("efaas.permanent_address", "Permanent Address", "Permanent address"),
+    ("profile", "Legacy profile", "Legacy scope kept for compatibility"),
+)
+
+SCOPE_CLAIMS = {
+    "efaas.profile": (
+        "first_name", "middle_name", "last_name", "full_name",
+        "first_name_dhivehi", "middle_name_dhivehi", "last_name_dhivehi", "full_name_dhivehi",
+        "gender", "idnumber", "verified", "verification_type", "last_verified_date",
+        "user_type_description", "updated_at",
+    ),
+    "efaas.email": ("email",),
+    "efaas.mobile": ("mobile", "country_dialing_code"),
+    "efaas.birthdate": ("birthdate",),
+    "efaas.photo": ("photo",),
+    "efaas.work_permit_status": ("is_workpermit_active",),
+    "efaas.passport_number": ("passport_number",),
+    "efaas.country": ("country_name", "country_code", "country_code_alpha3", "country_dialing_code"),
+    "efaas.permanent_address": ("permanent_address",),
+}
+
 
 def _cleanup_expired_codes():
     now = time.time()
     expired = [c for c, d in auth_codes.items() if d["expires_at"] < now]
     for c in expired:
         del auth_codes[c]
+
+
+def _normalize_scopes(scope_value: str) -> str:
+    scopes = []
+    seen = set()
+    for scope in (*DEFAULT_SCOPES, *(scope_value or "").split()):
+        scope = scope.strip()
+        if scope and scope not in seen:
+            scopes.append(scope)
+            seen.add(scope)
+    return " ".join(scopes)
+
+
+def _scope_set(scope_value: str) -> set[str]:
+    return set(_normalize_scopes(scope_value).split())
+
+
+def _user_claims_for_scopes(user: dict, scope_value: str, request: Request | None = None) -> dict:
+    scopes = _scope_set(scope_value)
+    claims = {"sub": user.get("sub", "")}
+
+    if "efaas.profile" in scopes or "profile" in scopes:
+        for key in SCOPE_CLAIMS["efaas.profile"]:
+            claims[key] = user.get(key, "")
+
+    for scope, keys in SCOPE_CLAIMS.items():
+        if scope == "efaas.profile":
+            continue
+        if scope not in scopes:
+            continue
+        for key in keys:
+            if key == "photo":
+                claims[key] = _photo_url(request) if request else user.get(key, "")
+            else:
+                claims[key] = user.get(key, "")
+
+    return claims
 
 
 def _get_user_list(search: str = "", sort: str = "name") -> list[dict]:
@@ -98,7 +167,7 @@ def _oauth_params(request: Request) -> dict:
     return {
         "client_id": request.query_params.get("client_id", ""),
         "redirect_uri": request.query_params.get("redirect_uri", ""),
-        "scope": request.query_params.get("scope", "openid"),
+        "scope": _normalize_scopes(request.query_params.get("scope", "")),
         "state": request.query_params.get("state", ""),
         "nonce": request.query_params.get("nonce", ""),
         "response_type": request.query_params.get("response_type", "code id_token"),
@@ -133,17 +202,19 @@ def _do_login(sub: str, oauth: dict, request: Request):
         return _error_html("User not found.", status_code=400)
 
     user = users[sub]
+    scope = _normalize_scopes(oauth.get("scope", ""))
+    user_claims = _user_claims_for_scopes(user, scope, request)
     code = str(uuid.uuid4()).replace("-", "")
     sid = str(uuid.uuid4()).replace("-", "").upper()[:32]
 
-    access_token = _make_access_token(sub, sid, oauth["client_id"], oauth["scope"])
+    access_token = _make_access_token(sub, sid, oauth["client_id"], scope)
     id_token = _make_id_token(sub, sid, oauth["client_id"], oauth.get("nonce"),
-                              access_token, oauth["scope"], user)
+                              access_token, scope, user_claims)
 
     auth_codes[code] = {
         "client_id": oauth["client_id"],
         "redirect_uri": oauth["redirect_uri"],
-        "scope": oauth["scope"],
+        "scope": scope,
         "nonce": oauth.get("nonce"),
         "state": oauth.get("state"),
         "expires_at": time.time() + AUTH_CODE_TTL,
@@ -159,14 +230,14 @@ def _do_login(sub: str, oauth: dict, request: Request):
 
     if request.headers.get("accept", "").startswith("application/json"):
         return JSONResponse({
-            "code": code, "id_token": id_token, "scope": oauth["scope"],
+            "code": code, "id_token": id_token, "scope": scope,
             "session_state": session_state, "state": oauth.get("state", ""),
         })
 
     return _html(AUTO_POST_TEMPLATE,
         redirect_uri=oauth["redirect_uri"],
         code=code, id_token=id_token,
-        scope=oauth["scope"],
+        scope=scope,
         session_state=session_state,
         state=oauth.get("state", ""),
     )
@@ -263,8 +334,11 @@ def authorize_get(request: Request,
     _cleanup_expired_codes()
     oauth = _oauth_params(request)
     user_list = _get_user_list(search=search, sort=sort)
+    selected_scopes = oauth["scope"].split()
     return _html(LOGIN_PAGE,
-        params=oauth, user_list=user_list, total_users=len(users))
+        params=oauth, user_list=user_list, total_users=len(users),
+        scope_options=AVAILABLE_SCOPES, selected_scopes=selected_scopes,
+        selected_scope_value=oauth["scope"])
 
 
 @app.post("/connect/authorize")
@@ -282,6 +356,7 @@ async def authorize_post(request: Request):
     for key in oauth:
         if key in form:
             oauth[key] = form[key]
+    oauth["scope"] = _normalize_scopes(oauth.get("scope", ""))
 
     action = form.get("action", "auto")
 
@@ -341,11 +416,13 @@ async def token(request: Request):
 
     del auth_codes[code]
 
+    user_claims = _user_claims_for_scopes(stored["user"], stored["scope"])
+
     return {
         "id_token": _make_id_token(
             stored["user_sub"], stored["sid"], stored["client_id"],
             stored.get("nonce"), stored["access_token"],
-            stored["scope"], stored["user"],
+            stored["scope"], user_claims,
         ),
         "access_token": stored["access_token"],
         "expires_in": ACCESS_TOKEN_TTL,
@@ -372,36 +449,9 @@ def userinfo(request: Request):
 
     sub = claims.get("sub", "")
     user = users.get(sub, generate_user())
-
-    return {
-        "sub": user.get("sub", ""),
-        "middle_name": user.get("middle_name", ""),
-        "gender": user.get("gender", ""),
-        "idnumber": user.get("idnumber", ""),
-        "email": user.get("email", ""),
-        "birthdate": user.get("birthdate", ""),
-        "passport_number": user.get("passport_number", ""),
-        "is_workpermit_active": user.get("is_workpermit_active", ""),
-        "updated_at": user.get("updated_at", ""),
-        "country_dialing_code": user.get("country_dialing_code", ""),
-        "country_code": user.get("country_code", ""),
-        "country_code_alpha3": user.get("country_code_alpha3", ""),
-        "verified": user.get("verified", ""),
-        "verification_type": user.get("verification_type", ""),
-        "first_name": user.get("first_name", ""),
-        "last_name": user.get("last_name", ""),
-        "full_name": user.get("full_name", ""),
-        "first_name_dhivehi": user.get("first_name_dhivehi", ""),
-        "middle_name_dhivehi": user.get("middle_name_dhivehi", ""),
-        "last_name_dhivehi": user.get("last_name_dhivehi", ""),
-        "full_name_dhivehi": user.get("full_name_dhivehi", ""),
-        "permanent_address": user.get("permanent_address", ""),
-        "user_type_description": user.get("user_type_description", ""),
-        "mobile": user.get("mobile", ""),
-        "photo": _photo_url(request),
-        "country_name": user.get("country_name", ""),
-        "last_verified_date": user.get("last_verified_date", ""),
-    }
+    scope = claims.get("scope", [])
+    scope_value = " ".join(scope) if isinstance(scope, list) else str(scope)
+    return _user_claims_for_scopes(user, scope_value, request)
 
 
 @app.get("/.well-known/openid-configuration/jwks")

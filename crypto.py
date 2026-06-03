@@ -83,7 +83,7 @@ def _make_access_token(sub: str, sid: str, client_id: str, scope: str) -> str:
 
 
 def _make_id_token(sub: str, sid: str, client_id: str, nonce: str | None,
-                   access_token: str, scope: str | None, user: dict) -> str:
+                   access_token: str, scope: str | None, user_claims: dict | None = None) -> str:
     now = int(time.time())
     at_hash_bytes = hashlib.sha256(access_token.encode("ascii")).digest()
     at_hash = base64url_encode(at_hash_bytes[:16]).decode("ascii")
@@ -93,33 +93,9 @@ def _make_id_token(sub: str, sid: str, client_id: str, nonce: str | None,
         "aud": client_id, "iat": now, "at_hash": at_hash,
         "sid": sid, "sub": sub, "auth_time": now,
         "idp": "local", "amr": ["pwd"],
-        "middle_name": user.get("middle_name", ""),
-        "gender": user.get("gender", ""),
-        "idnumber": user.get("idnumber", ""),
-        "email": user.get("email", ""),
-        "birthdate": user.get("birthdate", ""),
-        "passport_number": user.get("passport_number", ""),
-        "is_workpermit_active": user.get("is_workpermit_active", ""),
-        "updated_at": user.get("updated_at", ""),
-        "country_dialing_code": user.get("country_dialing_code", ""),
-        "country_code": user.get("country_code", ""),
-        "country_code_alpha3": user.get("country_code_alpha3", ""),
-        "verified": user.get("verified", ""),
-        "verification_type": user.get("verification_type", ""),
-        "first_name": user.get("first_name", ""),
-        "last_name": user.get("last_name", ""),
-        "full_name": user.get("full_name", ""),
-        "first_name_dhivehi": user.get("first_name_dhivehi", ""),
-        "middle_name_dhivehi": user.get("middle_name_dhivehi", ""),
-        "last_name_dhivehi": user.get("last_name_dhivehi", ""),
-        "full_name_dhivehi": user.get("full_name_dhivehi", ""),
-        "permanent_address": user.get("permanent_address", ""),
-        "user_type_description": user.get("user_type_description", ""),
-        "mobile": user.get("mobile", ""),
-        "photo": user.get("photo", ""),
-        "country_name": user.get("country_name", ""),
-        "last_verified_date": user.get("last_verified_date", ""),
     }
+    if user_claims:
+        claims.update(user_claims)
     if nonce:
         claims["nonce"] = nonce
     headers = {

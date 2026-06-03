@@ -158,6 +158,17 @@ def test_login_page_shows_users(client):
     assert 'data-sub="3b46dc4b-f565-420b-af8f-9312c86e40cb"' in r.text
 
 
+def test_login_page_prompts_for_scopes(client):
+    r = client.get("/connect/authorize", params={
+        "client_id": "test-client",
+        "redirect_uri": "http://localhost:8000/callback",
+    })
+    assert r.status_code == 200
+    assert "Scopes" in r.text
+    assert 'value="openid efaas.profile"' in r.text
+    assert 'data-scope-choice value="efaas.email"' in r.text
+
+
 # ──────────────────────────────────────────────
 # Tests — Full OAuth2 flow
 # ──────────────────────────────────────────────
@@ -177,6 +188,15 @@ def test_full_flow_select_user(client):
     assert user["email"] == "csc318@gmail.com"
     assert user["user_type_description"] == "Maldivian"
     assert "0.0.0.0" not in user.get("photo", "")
+
+
+def test_full_flow_normalizes_scopes(client):
+    """Requested optional scopes keep the default OIDC scopes."""
+    params = _oauth_params({"scope": "efaas.email"})
+    code = _do_login(client, "3b46dc4b-f565-420b-af8f-9312c86e40cb", params)
+    tokens = _exchange_code(client, code, params)
+
+    assert tokens["scope"] == "openid efaas.profile efaas.email"
 
 
 def test_full_flow_create_user(client):
@@ -413,6 +433,35 @@ def test_id_token_contains_user_data(client):
     assert decoded.get("gender") == "M"
 
 
+def test_scoped_responses_omit_unrequested_claims(client):
+    """Minimal scopes do not leak optional claims."""
+    params = {
+        "client_id": "test-client",
+        "redirect_uri": "http://localhost:8000/callback",
+        "scope": "openid",
+        "state": "test-state",
+        "nonce": "test-nonce",
+        "response_type": "code id_token",
+        "response_mode": "form_post",
+    }
+    code = _do_login(client, "3b46dc4b-f565-420b-af8f-9312c86e40cb", params)
+    tokens = _exchange_code(client, code, params)
+
+    jwks = client.get("/.well-known/openid-configuration/jwks").json()
+    pub_key = RSAAlgorithm.from_jwk(jwks["keys"][0])
+    decoded = pyjwt.decode(tokens["id_token"], pub_key, algorithms=["RS256"],
+                          options={"verify_aud": False})
+
+    assert decoded.get("full_name") == "CSC Test User 18"
+    assert "email" not in decoded
+    assert "photo" not in decoded
+
+    user = _get_userinfo(client, tokens["access_token"])
+    assert user.get("full_name") == "CSC Test User 18"
+    assert "email" not in user
+    assert "photo" not in user
+
+
 # ──────────────────────────────────────────────
 # Tests — Endsession
 # ──────────────────────────────────────────────
@@ -439,7 +488,7 @@ def test_endsession_no_redirect_returns_message(client):
 # ──────────────────────────────────────────────
 
 def test_create_work_permit_user(client):
-    params = _oauth_params()
+    params = _oauth_params({"scope": "efaas.email efaas.photo efaas.mobile efaas.birthdate efaas.passport_number efaas.country efaas.work_permit_status"})
     r = client.post("/connect/authorize", data={
         **params,
         "action": "create",
@@ -462,7 +511,7 @@ def test_create_work_permit_user(client):
 
 
 def test_create_foreigner_user(client):
-    params = _oauth_params()
+    params = _oauth_params({"scope": "efaas.email efaas.photo efaas.passport_number efaas.country"})
     r = client.post("/connect/authorize", data={
         **params,
         "action": "create",

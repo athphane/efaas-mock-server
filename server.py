@@ -63,7 +63,7 @@ from jinja2 import Template
 from constants import SERVER_URL, ACCESS_TOKEN_TTL, AUTH_CODE_TTL, COUNTRY_CODES, _HOST, _PORT
 from crypto import KID, _private_key, _public_key, _make_jwks, _make_access_token, _make_id_token
 from user_generator import users, _avatar_cache, generate_user
-from templates import LOGIN_PAGE, AUTO_POST_TEMPLATE, LOGOUT_PAGE, LOGOUT_RESULT_PAGE, LOGOUT_REDIRECT_PAGE
+from templates import LOGIN_PAGE, AUTO_POST_TEMPLATE, LOGOUT_PAGE, LOGOUT_RESULT_PAGE, LOGOUT_REDIRECT_PAGE, ERROR_PAGE
 
 app = FastAPI(title="eFaas Mock Server", version="3.0.0")
 
@@ -228,8 +228,7 @@ def _html(template_str: str, status_code: int = 200, **kwargs) -> HTMLResponse:
 
 
 def _error_html(message: str, detail: str = "", status_code: int = 400) -> HTMLResponse:
-    body = f"<h3>{message}</h3>" + (f"<p>{detail}</p>" if detail else "")
-    return HTMLResponse(content=body, status_code=status_code)
+    return _html(ERROR_PAGE, status_code=status_code, message=message, detail=detail, http_status=status_code)
 
 
 def _store_logout_session(sid: str, user: dict, client_id: str, id_token: str, scope: str,
